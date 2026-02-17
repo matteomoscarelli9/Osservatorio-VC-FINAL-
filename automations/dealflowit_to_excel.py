@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import html
 import json
 import os
 import re
@@ -7,8 +8,11 @@ import sqlite3
 import subprocess
 import sys
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import List, Dict, Tuple
+from urllib.request import urlopen
+import xml.etree.ElementTree as ET
 
 try:
     from openpyxl import load_workbook
@@ -219,6 +223,62 @@ def fetch_current_outlook_message() -> Tuple[str, str, str]:
     return subject, time_received, body
 
 
+def strip_html_to_text(raw: str) -> str:
+    if not raw:
+        return ""
+    txt = raw
+    txt = re.sub(r"(?i)<br\\s*/?>", "\n", txt)
+    txt = re.sub(r"(?i)</p>", "\n", txt)
+    txt = re.sub(r"(?i)</li>", "\n", txt)
+    txt = re.sub(r"(?i)<li[^>]*>", "• ", txt)
+    txt = re.sub(r"<[^>]+>", "", txt)
+    txt = html.unescape(txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
+
+
+def fetch_latest_rss_message(rss_url: str, subject_contains: str, recent_days: int) -> Tuple[str, str, str]:
+    if not rss_url:
+        return "", "", ""
+    with urlopen(rss_url, timeout=20) as resp:
+        payload = resp.read()
+    root = ET.fromstring(payload)
+
+    now = datetime.now()
+    cutoff = now.timestamp() - (recent_days * 86400)
+    best = None
+
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        pub_date = (item.findtext("pubDate") or "").strip()
+        description = (item.findtext("description") or "").strip()
+        encoded = ""
+        for child in list(item):
+            if child.tag.lower().endswith("encoded"):
+                encoded = (child.text or "").strip()
+                break
+        body_html = encoded or description
+        body_text = strip_html_to_text(body_html)
+
+        ts = 0
+        try:
+            dt = parsedate_to_datetime(pub_date)
+            ts = dt.timestamp()
+        except Exception:
+            ts = 0
+
+        if subject_contains and subject_contains.lower() not in title.lower():
+            continue
+        if ts and ts < cutoff:
+            continue
+        if best is None or ts > best[0]:
+            best = (ts, title, pub_date, body_text)
+
+    if best is None:
+        return "", "", ""
+    return best[1], best[2], best[3]
+
+
 def normalize_heading(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip()).lower()
 
@@ -321,6 +381,11 @@ def parse_outlook_datetime(date_str: str) -> datetime | None:
 
 
 def parse_date_to_month_year(date_str: str) -> str:
+    try:
+        dt = parsedate_to_datetime(date_str)
+        return dt.strftime("%b %Y")
+    except Exception:
+        pass
     dt = parse_outlook_datetime(date_str)
     if dt:
         return dt.strftime("%b %Y")
@@ -676,6 +741,7 @@ def main():
     parser.add_argument("--path", default=EXCEL_PATH_DEFAULT, help="Path to Excel file")
     parser.add_argument("--sheet", default=SHEET_DEFAULT, help="Sheet name")
     parser.add_argument("--db", default="", help=f"SQLite DB path for direct insert (default: {DB_PATH_DEFAULT})")
+    parser.add_argument("--rss-url", default="", help="RSS URL to read the latest newsletter from")
     parser.add_argument("--sender", default="")
     parser.add_argument("--subject", default="TWIS")
     parser.add_argument("--model", default="gpt-4.1-mini")
@@ -708,7 +774,10 @@ def main():
         print(list_latest_outlook_messages(args.list_latest, args.recent_days))
         return
 
-    if args.use_current:
+    if args.rss_url:
+        log_info(f"Reading latest newsletter from RSS: {args.rss_url}")
+        subject, time_received, body = fetch_latest_rss_message(args.rss_url, args.subject, args.recent_days)
+    elif args.use_current:
         log_info("Reading currently selected Outlook message")
         subject, time_received, body = fetch_current_outlook_message()
     else:

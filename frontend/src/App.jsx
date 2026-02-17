@@ -198,7 +198,11 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject: "TWIS", recent_days: 30 })
+        body: JSON.stringify({
+          subject: "TWIS",
+          recent_days: 30,
+          rss_url: "https://dealflowit.niccolosanarico.com/rss"
+        })
       });
       const data = await res.json();
       if (!res.ok || data.status === "Error") {

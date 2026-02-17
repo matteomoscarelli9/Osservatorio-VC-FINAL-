@@ -61,6 +61,7 @@ def run_job():
     use_current = bool(payload.get("use_current", False))
     subject = str(payload.get("subject", "TWIS")).strip() or "TWIS"
     sender = str(payload.get("sender", "")).strip()
+    rss_url = str(payload.get("rss_url", "")).strip()
     recent_days = int(payload.get("recent_days", 30))
     debug = bool(payload.get("debug", False))
 
@@ -79,6 +80,8 @@ def run_job():
     ]
     if sender:
         cmd.extend(["--sender", sender])
+    if rss_url:
+        cmd.extend(["--rss-url", rss_url])
     if use_current:
         cmd.append("--use-current")
     if debug:
