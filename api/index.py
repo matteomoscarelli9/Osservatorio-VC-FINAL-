@@ -27,6 +27,14 @@ def add_cors_headers(response):
 def chat_options():
     return ("", 204)
 
+@app.route("/api/health", methods=["GET"])
+def health():
+    try:
+        ensure_db()
+        return jsonify({"status": "ok", "db": "ready"})
+    except Exception as e:
+        return jsonify({"status": "degraded", "error": str(e)}), 500
+
 
 def db_conn():
     return sqlite3.connect(DB_PATH)
