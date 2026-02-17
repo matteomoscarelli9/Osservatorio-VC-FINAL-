@@ -11,7 +11,7 @@ from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import List, Dict, Tuple
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
 try:
@@ -240,8 +240,27 @@ def strip_html_to_text(raw: str) -> str:
 def fetch_latest_rss_message(rss_url: str, subject_contains: str, recent_days: int) -> Tuple[str, str, str]:
     if not rss_url:
         return "", "", ""
-    with urlopen(rss_url, timeout=20) as resp:
-        payload = resp.read()
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+        "Cache-Control": "no-cache",
+    }
+    req = Request(rss_url, headers=headers)
+    try:
+        with urlopen(req, timeout=20) as resp:
+            payload = resp.read()
+    except Exception:
+        # Some providers only respond when URL ends with '/'
+        if not rss_url.endswith("/"):
+            req2 = Request(rss_url + "/", headers=headers)
+            with urlopen(req2, timeout=20) as resp:
+                payload = resp.read()
+        else:
+            raise
     root = ET.fromstring(payload)
 
     now = datetime.now()
