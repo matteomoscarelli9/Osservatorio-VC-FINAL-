@@ -853,6 +853,8 @@ def synthesize_rows_for_missing_companies(
     existing = {str(r.get("Company", "")).strip().lower() for r in rows if str(r.get("Company", "")).strip()}
     synthesized = []
     for b in bullets:
+        if "raised" not in b.lower():
+            continue
         company = extract_company_from_bullet(b)
         if not company:
             continue
@@ -864,6 +866,8 @@ def synthesize_rows_for_missing_companies(
         row["Date"] = date_value
         row["Q"] = infer_quarter(date_value)
         row["Round size (€M)"] = extract_amount_from_bullet(b)
+        if not row["Round size (€M)"]:
+            continue
         row["Sector 1"] = infer_sector_from_bullet(company, [b])
         row["HQ"] = "Italy"
 
@@ -1045,6 +1049,13 @@ def main():
             row["HQ"] = hq_cache[company]
         elif "HQ" in row:
             row["HQ"] = "Italy"
+
+    # Guardrail: skip malformed extracted rows (event-like noise without round size)
+    rows = [
+        r for r in rows
+        if str(r.get("Company", "")).strip()
+        and str(r.get("Round size (€M)", "")).strip()
+    ]
 
     fallback_rows = synthesize_rows_for_missing_companies(
         bullets=bullets,
