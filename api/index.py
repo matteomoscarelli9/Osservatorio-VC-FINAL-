@@ -127,8 +127,15 @@ def run_job():
         cmd.append("--debug")
 
     proc = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
+    run_stdout = (proc.stdout or "").strip()
+    run_stderr = (proc.stderr or "").strip()
+    # Emit script output to runtime logs for easier debugging from Vercel.
+    if run_stdout:
+        print(f"[api/run stdout]\n{run_stdout}", flush=True)
+    if run_stderr:
+        print(f"[api/run stderr]\n{run_stderr}", flush=True)
     if proc.returncode != 0:
-        err = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+        err = run_stderr or run_stdout
         if "osascript" in err.lower() or "microsoft outlook" in err.lower():
             err = (
                 "Outlook automation unavailable in this runtime. "
@@ -153,6 +160,7 @@ def run_job():
             "status": "Success",
             "rows": rows,
             "companies": companies,
+            "model": EXTRACTION_MODEL,
             "time": datetime.now().strftime("%d %b %Y · %H:%M"),
         }
     )
