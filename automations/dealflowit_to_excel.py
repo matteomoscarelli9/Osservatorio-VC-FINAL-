@@ -363,7 +363,12 @@ def extract_the_money_section(body: str) -> List[str]:
     # Fallback: if no bullets found, treat sentence-like lines as bullets
     if not bullets:
         bullets = lines
-    return bullets
+    # Keep only funding bullets from The Money section.
+    funding_bullets = [
+        b for b in bullets
+        if re.search(r"\braised\b", b, flags=re.IGNORECASE) and ("€" in b or "eur" in b.lower())
+    ]
+    return funding_bullets if funding_bullets else bullets
 
 
 def parse_outlook_datetime(date_str: str) -> datetime | None:
@@ -585,6 +590,42 @@ def is_duplicate(ws, header_row: int, company_col_idx: int, date_col_idx: int, c
     return False
 
 
+def is_duplicate_with_amount(
+    ws,
+    header_row: int,
+    company_col_idx: int,
+    date_col_idx: int,
+    amount_col_idx: int,
+    company: str,
+    date_val: str,
+    amount_val: str,
+) -> bool:
+    if not company or not date_val:
+        return False
+    company_norm = str(company).strip().lower()
+    date_norm = str(date_val).strip().lower()
+    amount_norm = str(amount_val or "").strip().replace(",", ".")
+
+    last = get_last_data_row(ws, header_row, company_col_idx)
+    start = max(header_row + 1, last - 20)
+    for row in range(start, last + 1):
+        c = ws.cell(row=row, column=company_col_idx).value
+        d = ws.cell(row=row, column=date_col_idx).value
+        a = ws.cell(row=row, column=amount_col_idx).value
+        if c is None or d is None:
+            continue
+        if str(c).strip().lower() != company_norm:
+            continue
+        if str(d).strip().lower() != date_norm:
+            continue
+        if amount_norm:
+            if str(a or "").strip().replace(",", ".") == amount_norm:
+                return True
+        else:
+            return True
+    return False
+
+
 def append_rows(
     ws,
     header_row: int,
@@ -600,6 +641,7 @@ def append_rows(
     company_col_idx = header_map[dedup_company]
     date_col_idx = header_map[dedup_date]
 
+    amount_col_idx = header_map.get("Round size (€M)")
     last = get_last_data_row(ws, header_row, company_col_idx)
     inserted = 0
     inserted_companies = []
@@ -607,7 +649,21 @@ def append_rows(
     for row in rows:
         company = row.get(dedup_company, "")
         date_val = row.get(dedup_date, "")
-        if is_duplicate(ws, header_row, company_col_idx, date_col_idx, company, date_val):
+        amount_val = row.get("Round size (€M)", "")
+        if amount_col_idx:
+            dup = is_duplicate_with_amount(
+                ws,
+                header_row,
+                company_col_idx,
+                date_col_idx,
+                amount_col_idx,
+                company,
+                date_val,
+                amount_val,
+            )
+        else:
+            dup = is_duplicate(ws, header_row, company_col_idx, date_col_idx, company, date_val)
+        if dup:
             continue
         last += 1
         for h, col in header_map.items():
@@ -652,14 +708,26 @@ def _qident(name: str) -> str:
 
 
 def db_is_duplicate(conn, company: str, date_val: str, pg_mode: bool = False) -> bool:
+    return db_is_duplicate_with_amount(conn, company, date_val, "", pg_mode)
+
+
+def db_is_duplicate_with_amount(conn, company: str, date_val: str, amount_val: str, pg_mode: bool = False) -> bool:
     if not company or not date_val:
         return False
     p = "%s" if pg_mode else "?"
     cur = conn.cursor()
-    cur.execute(
-        f'SELECT 1 FROM rounds WHERE LOWER("Company") = LOWER({p}) AND LOWER("Date") = LOWER({p}) LIMIT 1',
-        (str(company).strip(), str(date_val).strip()),
-    )
+    if str(amount_val or "").strip():
+        cur.execute(
+            f'SELECT 1 FROM rounds WHERE LOWER("Company") = LOWER({p}) AND LOWER("Date") = LOWER({p}) '
+            f'AND REPLACE(COALESCE("Round size (€M)", \'\'), \',\', \'.\') = REPLACE(COALESCE({p}, \'\'), \',\', \'.\') '
+            f'LIMIT 1',
+            (str(company).strip(), str(date_val).strip(), str(amount_val).strip()),
+        )
+    else:
+        cur.execute(
+            f'SELECT 1 FROM rounds WHERE LOWER("Company") = LOWER({p}) AND LOWER("Date") = LOWER({p}) LIMIT 1',
+            (str(company).strip(), str(date_val).strip()),
+        )
     out = cur.fetchone() is not None
     cur.close()
     return out
@@ -695,7 +763,8 @@ def db_insert_rows(
         for row in rows:
             company = row.get(dedup_company, "")
             date_val = row.get(dedup_date, "")
-            if db_is_duplicate(conn, company, date_val, pg_mode):
+            amount_val = row.get("Round size (€M)", "")
+            if db_is_duplicate_with_amount(conn, company, date_val, amount_val, pg_mode):
                 continue
             values = [row.get(h, "") for h in insertable_headers]
             cur.execute(insert_sql, values)
@@ -807,11 +876,18 @@ def format_decimal_comma(value: str) -> str:
 def extract_company_from_bullet(bullet: str) -> str:
     if not bullet:
         return ""
-    m = re.match(r"^\s*([A-Za-z0-9&'().+\- ]+?)[,:\-]\s", bullet.strip())
+    s = bullet.strip()
+    s = re.sub(r"^[^A-Za-z0-9]+", "", s)
+    m = re.match(r"^\s*([A-Za-z0-9&'().+\- ]+?)[,:\-]\s", s)
     if m:
-        return m.group(1).strip()
-    m = re.match(r"^\s*([A-Z][A-Za-z0-9&'().+\- ]{1,80})\s", bullet.strip())
-    return m.group(1).strip() if m else ""
+        name = m.group(1).strip()
+        return re.sub(r"\s+", " ", name)
+    # Fallback: capture first title-like token sequence before "raised".
+    m = re.search(r"([A-Z][A-Za-z0-9&'().+\- ]{1,80}?)\s*,[^.]{0,180}\braised\b", s, flags=re.IGNORECASE)
+    if m:
+        return re.sub(r"\s+", " ", m.group(1).strip())
+    m = re.match(r"^\s*([A-Z][A-Za-z0-9&'().+\- ]{1,80})\s", s)
+    return re.sub(r"\s+", " ", m.group(1).strip()) if m else ""
 
 
 def extract_amount_from_bullet(bullet: str) -> str:
