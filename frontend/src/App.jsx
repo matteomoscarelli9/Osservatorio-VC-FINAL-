@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import uvLogo from "./assets/uv-logo.png";
 
 export default function App() {
   const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
@@ -310,7 +311,7 @@ export default function App() {
             target="_blank"
             rel="noreferrer"
           >
-            <img className="uv-logo" src="/src/assets/uv-logo.png" alt="United Ventures" />
+            <img className="uv-logo" src={uvLogo} alt="United Ventures" />
           </a>
         </div>
       </header>
