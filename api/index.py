@@ -4,6 +4,7 @@ import re
 import sqlite3
 import difflib
 import subprocess
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 
@@ -90,6 +91,15 @@ def ensure_db():
         raise RuntimeError("Table 'rounds' not found in DB")
 
 
+def _load_automation_module():
+    spec = importlib.util.spec_from_file_location("dealflowit_to_excel", AUTOMATION_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load automation module: {AUTOMATION_SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @app.route("/api/run", methods=["POST"])
 def run_job():
     payload = request.get_json(silent=True) or {}
@@ -164,6 +174,29 @@ def run_job():
             "time": datetime.now().strftime("%d %b %Y · %H:%M"),
         }
     )
+
+
+@app.route("/api/debug/rss-bullets", methods=["GET"])
+def debug_rss_bullets():
+    rss_url = request.args.get("rss_url", "https://dealflowit.niccolosanarico.com/feed").strip()
+    subject = request.args.get("subject", "TWIS").strip() or "TWIS"
+    recent_days = int(request.args.get("recent_days", "30"))
+    try:
+        mod = _load_automation_module()
+        msg_subject, time_received, body = mod.fetch_latest_rss_message(rss_url, subject, recent_days)
+        bullets = mod.extract_the_money_section(body)
+        return jsonify(
+            {
+                "status": "Success",
+                "rss_url": rss_url,
+                "subject_selected": msg_subject,
+                "time_received": time_received,
+                "bullet_count": len(bullets),
+                "bullets": bullets,
+            }
+        )
+    except Exception as e:
+        return jsonify({"status": "Error", "error": str(e)}), 500
 
 
 @app.route("/api/sync", methods=["POST"])
