@@ -1,0 +1,755 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime
+from typing import List, Dict, Tuple
+
+try:
+    from openpyxl import load_workbook
+except Exception as e:
+    load_workbook = None
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
+SEP = "<<<SEP>>>"
+DEFAULT_HQ_CACHE = "/Users/matteomoscarelli/Documents/New project/automations/hq_cache.json"
+EXCEL_PATH_DEFAULT = "/Users/matteomoscarelli/Library/CloudStorage/OneDrive-Raccoltecondivise-UnitedVentures/United Ventures - United Ventures/04. Portfolio/Portfolio Team/100. OLD/07. Dealflow Meeting MM/Osservatorio VC Italy _.xlsx"
+SHEET_DEFAULT = "Funding rounds (3)"
+
+ALLOWED_SECTORS = [
+    "Agritech",
+    "Biotech",
+    "Blue Economy",
+    "Cleantech",
+    "Climate Tech",
+    "Consulting",
+    "Consumer Services",
+    "Crypto",
+    "Cybersecurity",
+    "Deep Tech",
+    "DevOps",
+    "eCommerce",
+    "Edtech",
+    "Energy",
+    "Enterprise Tech",
+    "Entraitment",
+    "Fashion",
+    "Femtech",
+    "Fintech",
+    "Food",
+    "Gaming",
+    "HR Tech",
+    "Industrial Tech",
+    "Insurtech",
+    "Life Sciences",
+    "Logistics",
+    "Media & Ad",
+    "Mobility",
+    "Quantum",
+    "Social Network",
+    "Silver Economy",
+    "Travel & Hospitality",
+    "Web3",
+]
+
+
+def log_info(message: str) -> None:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {message}", flush=True)
+
+
+def run_osascript(script: str) -> str:
+    proc = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "osascript failed")
+    return proc.stdout.strip()
+
+
+def fetch_latest_outlook_message(sender: str, subject_contains: str, recent_days: int) -> Tuple[str, str, str]:
+    # Returns (subject, time_received_str, body_plain)
+    applescript = f'''
+    set subjectKeyword to "{subject_contains}"
+    set senderKeyword to "{sender}"
+    set cutoffDate to (current date) - ({recent_days} * days)
+    tell application "Microsoft Outlook"
+        set totalCount to count of messages of inbox
+        set scanCount to totalCount
+        if scanCount > 800 then set scanCount to 800
+        set latestMsg to missing value
+        set latestDate to date "01/01/1970"
+        repeat with i from 1 to scanCount
+            set m to item i of messages of inbox
+            try
+                set d to time received of m
+            on error
+                set d to date "01/01/1970"
+            end try
+            if d < cutoffDate then
+                -- skip old
+            else
+                try
+                    set subj to subject of m as string
+                on error
+                    set subj to ""
+                end try
+                try
+                    set senderStr to sender of m as string
+                on error
+                    set senderStr to ""
+                end try
+                if subjectKeyword is "" then
+                    set matchesSubject to true
+                else
+                    ignoring case
+                        set matchesSubject to (subj contains subjectKeyword)
+                    end ignoring
+                end if
+                if senderKeyword is "" then
+                    set matchesSender to true
+                else
+                    ignoring case
+                        set matchesSender to (senderStr contains senderKeyword)
+                    end ignoring
+                end if
+                if matchesSubject and matchesSender then
+                    if d > latestDate then
+                        set latestDate to d
+                        set latestMsg to m
+                    end if
+                end if
+            end if
+        end repeat
+        if latestMsg is missing value then return ""
+        set outSubject to subject of latestMsg as string
+        set outDate to (time received of latestMsg) as string
+        set outBody to plain text content of latestMsg
+        return outSubject & "{SEP}" & outDate & "{SEP}" & outBody
+    end tell
+    '''
+    out = run_osascript(applescript)
+    if not out:
+        return "", "", ""
+    parts = out.split(SEP)
+    if len(parts) < 3:
+        raise RuntimeError("Unexpected Outlook output format")
+    subject = parts[0].strip()
+    time_received = parts[1].strip()
+    body = SEP.join(parts[2:]).strip()
+    return subject, time_received, body
+
+
+def list_latest_outlook_messages(limit: int = 50, recent_days: int = 30) -> str:
+    applescript = f'''
+    set maxItems to {limit}
+    set cutoffDate to (current date) - ({recent_days} * days)
+    tell application "Microsoft Outlook"
+        set targetMessages to messages of inbox
+        set out to ""
+        set out to ""
+        set countSeen to 0
+        repeat with m in targetMessages
+            try
+                set subj to subject of m as string
+            on error
+                set subj to ""
+            end try
+            try
+                set senderStr to sender of m as string
+            on error
+                set senderStr to ""
+            end try
+            try
+                set receivedStr to (time received of m) as string
+            on error
+                set receivedStr to ""
+            end try
+            try
+                set d to time received of m
+            on error
+                set d to date "01/01/1970"
+            end try
+            if d ≥ cutoffDate then
+                set out to out & subj & " | " & senderStr & " | " & receivedStr & "\\n"
+                set countSeen to countSeen + 1
+                if countSeen ≥ maxItems then exit repeat
+            end if
+        end repeat
+        return out
+    end tell
+    '''
+    return run_osascript(applescript)
+
+
+def fetch_current_outlook_message() -> Tuple[str, str, str]:
+    # Returns (subject, time_received_str, body_plain) for the currently selected message
+    applescript = f'''
+    tell application "Microsoft Outlook"
+        set sel to selection
+        if sel is {{}} then return ""
+        set m to item 1 of sel
+        set outSubject to subject of m as string
+        set outDate to (time received of m) as string
+        set outBody to plain text content of m
+        return outSubject & "{SEP}" & outDate & "{SEP}" & outBody
+    end tell
+    '''
+    out = run_osascript(applescript)
+    if not out:
+        return "", "", ""
+    parts = out.split(SEP)
+    if len(parts) < 3:
+        raise RuntimeError("Unexpected Outlook output format")
+    subject = parts[0].strip()
+    time_received = parts[1].strip()
+    body = SEP.join(parts[2:]).strip()
+    return subject, time_received, body
+
+
+def normalize_heading(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip()).lower()
+
+
+def extract_the_money_section(body: str) -> List[str]:
+    if not body:
+        return []
+    # Normalize line endings
+    text = body.replace("\r\n", "\n").replace("\r", "\n")
+    # Find "The Money" header (allow emoji/punctuation)
+    money_idx = re.search(r"(?i)(?:^|\n).*the\s+money\b", text)
+    if not money_idx:
+        return []
+    start = money_idx.end()
+    tail = text[start:]
+    # Stop at next section-like heading (e.g., "The Buzz", "The People", "The Rundown")
+    m = re.search(r"\n\s*the\s+[a-z][a-z\s]+\n", tail, flags=re.IGNORECASE)
+    if m:
+        tail = tail[: m.start()]
+
+    # Collect bullet lines. Handle bullets that wrap across lines.
+    lines = [ln.strip() for ln in tail.split("\n") if ln.strip()]
+    bullets = []
+    current = ""
+    for ln in lines:
+        if ln.startswith("•") or ln.startswith("-") or ln.startswith("*"):
+            if current:
+                bullets.append(current.strip())
+            current = re.sub(r"^[•\-*]\s*", "", ln).strip()
+        else:
+            if current:
+                current += " " + ln.strip()
+    if current:
+        bullets.append(current.strip())
+
+    # Fallback: if no bullets found, treat sentence-like lines as bullets
+    if not bullets:
+        bullets = lines
+    return bullets
+
+
+def parse_outlook_datetime(date_str: str) -> datetime | None:
+    if not date_str:
+        return None
+    s = date_str.strip()
+
+    it_months = {
+        "gennaio": "January",
+        "febbraio": "February",
+        "marzo": "March",
+        "aprile": "April",
+        "maggio": "May",
+        "giugno": "June",
+        "luglio": "July",
+        "agosto": "August",
+        "settembre": "September",
+        "ottobre": "October",
+        "novembre": "November",
+        "dicembre": "December",
+    }
+    it_weekdays = [
+        "lunedì",
+        "lunedi",
+        "martedì",
+        "martedi",
+        "mercoledì",
+        "mercoledi",
+        "giovedì",
+        "giovedi",
+        "venerdì",
+        "venerdi",
+        "sabato",
+        "domenica",
+    ]
+
+    s_lower = s.lower()
+    for w in it_weekdays:
+        s_lower = s_lower.replace(w, "").strip()
+    s = s_lower
+    for it, en in it_months.items():
+        s = re.sub(rf"\\b{it}\\b", en, s, flags=re.IGNORECASE)
+    s = s.replace("date ", " ")
+    s = s.replace("alle ore", " ")
+    s = s.replace(",", " ")
+    s = re.sub(r"\\s+", " ", s).strip()
+
+    for fmt in [
+        "%A %d %B %Y %H:%M:%S",
+        "%A %d %B %Y %H:%M",
+        "%d %B %Y %H:%M:%S",
+        "%d %B %Y %H:%M",
+        "%b %d %Y %I:%M:%S %p",
+        "%b %d %Y %I:%M %p",
+    ]:
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            pass
+    return None
+
+
+def parse_date_to_month_year(date_str: str) -> str:
+    dt = parse_outlook_datetime(date_str)
+    if dt:
+        return dt.strftime("%b %Y")
+    # Fallback formats.
+    for fmt in [
+        "%A, %d %B %Y %H:%M:%S",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d %B %Y %H:%M:%S",
+        "%d %B %Y %H:%M",
+        "%b %d, %Y %I:%M:%S %p",
+    ]:
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            return dt.strftime("%b %Y")
+        except Exception:
+            pass
+    return ""
+
+
+def infer_quarter(month_year: str) -> str:
+    try:
+        dt = datetime.strptime(month_year, "%b %Y")
+        q = (dt.month - 1) // 3 + 1
+        return f"Q{q} {dt.year}"
+    except Exception:
+        return ""
+
+
+def openai_extract_rows(bullets: List[str], headers: List[str], email_date: str, model: str) -> List[Dict[str, str]]:
+    if OpenAI is None:
+        raise RuntimeError("openai package not installed")
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+
+    client = OpenAI(api_key=api_key)
+
+    month_year = parse_date_to_month_year(email_date)
+    quarter = infer_quarter(month_year) if month_year else ""
+
+    system = (
+        "You extract structured funding deals from a newsletter. "
+        "Return JSON only."
+    )
+
+    user = {
+        "headers": headers,
+        "email_date": email_date,
+        "default_date": month_year,
+        "default_quarter": quarter,
+        "allowed_sectors": ALLOWED_SECTORS,
+        "bullets": bullets,
+        "rules": [
+            "Return a JSON array. Each item corresponds to one bullet/deal.",
+            "Keys must exactly match the headers list. Use empty string for missing data.",
+            "Map company name to 'Company'.",
+            "Map sector or description to 'Sector 1' using ONLY allowed_sectors. Always choose the closest fit; do not leave empty.",
+            "Leave 'Tag' empty.",
+            "Leave 'HQ' empty (it will be filled from lookup).",
+            "Map round size in € millions to 'Round size (€M)' as a number string.",
+            "Set 'Date' to the month+year of the email if not explicit (e.g., 'Feb 2026').",
+            "Set 'Q' from the Date if possible (e.g., 'Q1 2026').",
+            "Map lead investor to 'Lead' and other investors to 'Co-lead / follow 1', 'follow 2', 'follow 3', 'follow 4' in order.",
+            "Do not set 'Tag' (leave empty).",
+        ],
+    }
+
+    resp = client.responses.create(
+        model=model,
+        input=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+        ],
+    )
+
+    text = ""
+    if hasattr(resp, "output_text") and resp.output_text:
+        text = resp.output_text
+    else:
+        for item in getattr(resp, "output", []):
+            if getattr(item, "type", "") == "message":
+                for c in getattr(item, "content", []):
+                    if getattr(c, "type", "") == "output_text":
+                        text += c.text
+
+    text = text.strip()
+    if not text:
+        raise RuntimeError("Empty response from OpenAI")
+    return json.loads(text)
+
+
+def find_header_row(ws, header_name: str) -> int:
+    for row in ws.iter_rows(min_row=1, max_row=20):
+        for cell in row:
+            if cell.value and str(cell.value).strip().lower() == header_name.lower():
+                return cell.row
+    raise RuntimeError(f"Header '{header_name}' not found")
+
+
+def read_headers(ws, header_row: int) -> List[str]:
+    headers = []
+    for cell in ws[header_row]:
+        if cell.value is None:
+            headers.append("")
+        else:
+            headers.append(str(cell.value).strip())
+    # Trim trailing empty headers
+    while headers and headers[-1] == "":
+        headers.pop()
+    return headers
+
+
+def get_last_data_row(ws, header_row: int, company_col_idx: int) -> int:
+    last = header_row
+    for row in range(header_row + 1, ws.max_row + 1):
+        val = ws.cell(row=row, column=company_col_idx).value
+        if val not in (None, ""):
+            last = row
+    return last
+
+
+def is_duplicate(ws, header_row: int, company_col_idx: int, date_col_idx: int, company: str, date_val: str) -> bool:
+    if not company or not date_val:
+        return False
+    company_norm = str(company).strip().lower()
+    date_norm = str(date_val).strip().lower()
+
+    last = get_last_data_row(ws, header_row, company_col_idx)
+    start = max(header_row + 1, last - 5)
+    for row in range(start, last + 1):
+        c = ws.cell(row=row, column=company_col_idx).value
+        d = ws.cell(row=row, column=date_col_idx).value
+        if c is None or d is None:
+            continue
+        if str(c).strip().lower() == company_norm and str(d).strip().lower() == date_norm:
+            return True
+    return False
+
+
+def append_rows(
+    ws,
+    header_row: int,
+    headers: List[str],
+    rows: List[Dict[str, str]],
+    dedup_company: str,
+    dedup_date: str,
+) -> tuple[int, List[str]]:
+    header_map = {h: i + 1 for i, h in enumerate(headers) if h}
+    if dedup_company not in header_map or dedup_date not in header_map:
+        raise RuntimeError("Dedup headers not found in sheet")
+
+    company_col_idx = header_map[dedup_company]
+    date_col_idx = header_map[dedup_date]
+
+    last = get_last_data_row(ws, header_row, company_col_idx)
+    inserted = 0
+    inserted_companies = []
+
+    for row in rows:
+        company = row.get(dedup_company, "")
+        date_val = row.get(dedup_date, "")
+        if is_duplicate(ws, header_row, company_col_idx, date_col_idx, company, date_val):
+            continue
+        last += 1
+        for h, col in header_map.items():
+            if h in row:
+                ws.cell(row=last, column=col).value = row[h]
+        inserted += 1
+        if company:
+            inserted_companies.append(str(company))
+    return inserted, inserted_companies
+
+
+def load_hq_cache(path: str) -> Dict[str, str]:
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {str(k).strip().lower(): str(v).strip() for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def normalize_sector(value: str) -> str:
+    if not value:
+        return ""
+    val = value.strip().lower()
+    # Map common variants to allowed sectors
+    variants = {
+        "clean tech": "Cleantech",
+        "cleantech": "Cleantech",
+        "climate tech": "Climate Tech",
+        "cyber security": "Cybersecurity",
+        "cybersecurity": "Cybersecurity",
+        "e-commerce": "eCommerce",
+        "ecommerce": "eCommerce",
+        "enterprise tech": "Enterprise Tech",
+        "industrial tech": "Industrial Tech",
+        "life sciences": "Life Sciences",
+        "fintech": "Fintech",
+        "insurtech": "Insurtech",
+        "hr tech": "HR Tech",
+        "foodtech": "Food",
+        "food tech": "Food",
+        "edtech": "Edtech",
+        "web 3": "Web3",
+        "social network": "Social Network",
+    }
+    if val in variants:
+        return variants[val]
+    for s in ALLOWED_SECTORS:
+        if s.lower() == val:
+            return s
+    return ""
+
+
+def infer_sector_from_bullet(company: str, bullets: List[str]) -> str:
+    if not company:
+        return ""
+    comp = company.strip().lower()
+    bullet = ""
+    for b in bullets:
+        if comp in b.lower():
+            bullet = b.lower()
+            break
+    if not bullet:
+        return ""
+    keywords = [
+        (["nuclear", "energy", "power", "fusion", "reactor"], "Energy"),
+        (["fintech", "bank", "payments", "payment", "insurance", "insurtech"], "Fintech"),
+        (["caregiver", "caregivers", "health", "medical", "clinic", "hospital", "biotech", "pharma", "medtech"], "Life Sciences"),
+        (["ai", "machine learning", "ml", "deep tech", "quantum"], "Deep Tech"),
+        (["cyber", "security"], "Cybersecurity"),
+        (["ecommerce", "e-commerce", "marketplace", "retail"], "eCommerce"),
+        (["logistics", "supply chain", "delivery"], "Logistics"),
+        (["mobility", "transport", "fleet", "automotive"], "Mobility"),
+        (["climate", "cleantech", "carbon"], "Climate Tech"),
+        (["enterprise", "saas", "b2b", "devops"], "Enterprise Tech"),
+        (["industrial", "manufacturing", "factory"], "Industrial Tech"),
+        (["food", "agri", "agritech"], "Food"),
+        (["travel", "hospitality"], "Travel & Hospitality"),
+        (["web3", "crypto", "blockchain"], "Web3"),
+    ]
+    for keys, sector in keywords:
+        if any(k in bullet for k in keys):
+            return sector
+    return ""
+
+
+def format_decimal_comma(value: str) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    # If already uses comma or is not numeric-like, return as-is
+    if "," in s:
+        return s
+    # Accept numbers like 1.23 or 1 or 1.0
+    if re.fullmatch(r"\d+(\.\d+)?", s):
+        return s.replace(".", ",")
+    return s
+
+
+def backfill_hq_from_cache(ws, header_row: int, headers: List[str], hq_cache: Dict[str, str]) -> int:
+    header_map = {h: i + 1 for i, h in enumerate(headers) if h}
+    if "Company" not in header_map or "HQ" not in header_map:
+        return 0
+    company_col = header_map["Company"]
+    hq_col = header_map["HQ"]
+    updated = 0
+    for row in range(header_row + 1, ws.max_row + 1):
+        company = ws.cell(row=row, column=company_col).value
+        hq = ws.cell(row=row, column=hq_col).value
+        if not company:
+            continue
+        comp_key = str(company).strip().lower()
+        if str(hq).strip().lower() == "italy" and comp_key in hq_cache:
+            ws.cell(row=row, column=hq_col).value = hq_cache[comp_key]
+            updated += 1
+    return updated
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Parse DealflowIT newsletter and append to Excel.")
+    parser.add_argument("--path", default=EXCEL_PATH_DEFAULT, help="Path to Excel file")
+    parser.add_argument("--sheet", default=SHEET_DEFAULT, help="Sheet name")
+    parser.add_argument("--sender", default="")
+    parser.add_argument("--subject", default="TWIS")
+    parser.add_argument("--model", default="gpt-4.1-mini")
+    parser.add_argument("--after", default="", help="Filter emails received on/after this date (YYYY-MM-DD)")
+    parser.add_argument("--before", default="", help="Filter emails received on/before this date (YYYY-MM-DD)")
+    parser.add_argument("--recent-days", type=int, default=30, help="Only scan emails from the last N days")
+    parser.add_argument("--hq-cache", default=DEFAULT_HQ_CACHE, help="Path to HQ cache JSON")
+    parser.add_argument("--use-current", action="store_true", help="Use current selected Outlook message")
+    parser.add_argument("--list-latest", type=int, default=0, help="List latest N messages (subject | sender) and exit")
+    parser.add_argument("--backfill-hq", action="store_true", help="Replace HQ='Italy' using HQ cache in existing rows")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+    log_info(
+        f"Start run: sheet='{args.sheet}', recent_days={args.recent_days}, "
+        f"use_current={args.use_current}, dry_run={args.dry_run}, backfill_hq={args.backfill_hq}"
+    )
+    log_info(f"Excel path: {args.path}")
+
+    if load_workbook is None:
+        raise RuntimeError("openpyxl not installed")
+
+    if args.list_latest and args.list_latest > 0:
+        log_info(f"Listing latest {args.list_latest} Outlook messages")
+        print(list_latest_outlook_messages(args.list_latest, args.recent_days))
+        return
+
+    if args.use_current:
+        log_info("Reading currently selected Outlook message")
+        subject, time_received, body = fetch_current_outlook_message()
+    else:
+        log_info(f"Searching latest Outlook message (subject contains '{args.subject}', sender contains '{args.sender}')")
+        subject, time_received, body = fetch_latest_outlook_message(args.sender, args.subject, args.recent_days)
+    if not subject:
+        log_info("No matching message found")
+        print("No matching email found")
+        return
+    log_info(f"Message selected: subject='{subject}' time_received='{time_received}'")
+    if args.debug:
+        print(f"DEBUG subject: {subject}")
+        print(f"DEBUG time_received: {time_received}")
+        print("DEBUG body head:")
+        print(body[:1000])
+
+    if args.after or args.before:
+        dt = parse_outlook_datetime(time_received)
+        if dt is None:
+            print("Could not parse Outlook date; skipping date filter")
+        else:
+            after_dt = datetime.strptime(args.after, "%Y-%m-%d") if args.after else None
+            before_dt = datetime.strptime(args.before, "%Y-%m-%d") if args.before else None
+            if after_dt and dt.date() < after_dt.date():
+                print("No matching email found in date range")
+                return
+            if before_dt and dt.date() > before_dt.date():
+                print("No matching email found in date range")
+                return
+
+    bullets = extract_the_money_section(body)
+    if not bullets:
+        log_info("No 'The Money' section extracted from message body")
+        print("No 'The Money' items found")
+        if args.debug:
+            print("DEBUG body head (no money section):")
+            print(body[:1500])
+        return
+    log_info(f"Extracted {len(bullets)} 'The Money' items")
+
+    log_info("Opening workbook")
+    wb = load_workbook(args.path)
+    if args.sheet not in wb.sheetnames:
+        raise RuntimeError(f"Sheet '{args.sheet}' not found in workbook")
+    ws = wb[args.sheet]
+
+    header_row = find_header_row(ws, "Company")
+    headers = read_headers(ws, header_row)
+
+    hq_cache = load_hq_cache(args.hq_cache)
+    log_info(f"HQ cache loaded entries: {len(hq_cache)}")
+    if args.backfill_hq:
+        log_info("Running HQ backfill mode")
+        updated = backfill_hq_from_cache(ws, header_row, headers, hq_cache)
+        if args.dry_run:
+            log_info(f"Dry run completed: would update {updated} HQ cells")
+            print(f"Dry run: would update {updated} HQ cells")
+            return
+        wb.save(args.path)
+        log_info(f"Workbook saved. Updated HQ cells: {updated}")
+        print(f"Updated {updated} HQ cells")
+        return
+
+    log_info(f"Calling OpenAI model '{args.model}' to extract structured rows")
+    rows = openai_extract_rows(bullets, headers, time_received, args.model)
+    if not isinstance(rows, list):
+        raise RuntimeError("OpenAI output is not a list")
+    log_info(f"OpenAI returned {len(rows)} row candidates")
+
+    for row in rows:
+        # Force Tag empty
+        if "Tag" in row:
+            row["Tag"] = ""
+        # Normalize Sector 1 to allowed list
+        if "Sector 1" in row:
+            sector = normalize_sector(row.get("Sector 1", ""))
+            if not sector:
+                sector = infer_sector_from_bullet(str(row.get("Company", "")), bullets)
+            row["Sector 1"] = sector
+        # Format Round size (€M) with comma decimal
+        if "Round size (€M)" in row:
+            row["Round size (€M)"] = format_decimal_comma(row.get("Round size (€M)", ""))
+        # Fill HQ from cache if available, else default to Italy
+        company = str(row.get("Company", "")).strip().lower()
+        if company and "HQ" in row and company in hq_cache:
+            row["HQ"] = hq_cache[company]
+        elif "HQ" in row:
+            row["HQ"] = "Italy"
+
+    inserted, inserted_companies = append_rows(
+        ws,
+        header_row,
+        headers,
+        rows,
+        dedup_company="Company",
+        dedup_date="Date",
+    )
+
+    if args.dry_run:
+        log_info(f"Dry run completed: would insert {inserted} rows")
+        print(f"Dry run: would insert {inserted} rows")
+        print("RESULT_JSON:" + json.dumps({"rows": inserted, "companies": inserted_companies}))
+        return
+
+    wb.save(args.path)
+    log_info(f"Workbook saved. Inserted rows: {inserted}. Companies: {', '.join(inserted_companies) if inserted_companies else '-'}")
+    print(f"Inserted {inserted} rows")
+    print("RESULT_JSON:" + json.dumps({"rows": inserted, "companies": inserted_companies}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
