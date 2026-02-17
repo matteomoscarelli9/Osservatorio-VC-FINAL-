@@ -819,7 +819,7 @@ def main():
     parser.add_argument("--rss-url", default="", help="RSS URL to read the latest newsletter from")
     parser.add_argument("--sender", default="")
     parser.add_argument("--subject", default="TWIS")
-    parser.add_argument("--model", default="gpt-4.1-mini")
+    parser.add_argument("--model", default="gpt-5.2")
     parser.add_argument("--after", default="", help="Filter emails received on/after this date (YYYY-MM-DD)")
     parser.add_argument("--before", default="", help="Filter emails received on/before this date (YYYY-MM-DD)")
     parser.add_argument("--recent-days", type=int, default=30, help="Only scan emails from the last N days")

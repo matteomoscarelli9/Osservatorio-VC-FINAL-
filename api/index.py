@@ -22,6 +22,7 @@ DB_PATH = os.environ.get("DB_PATH", DEFAULT_DB_PATH)
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = bool(DATABASE_URL)
 AUTOMATION_SCRIPT = str(Path(__file__).resolve().parents[1] / "automations" / "dealflowit_to_excel.py")
+EXTRACTION_MODEL = os.environ.get("OPENAI_EXTRACTION_MODEL", "gpt-5.2")
 
 
 @app.after_request
@@ -105,6 +106,8 @@ def run_job():
     cmd = [
         "python3",
         AUTOMATION_SCRIPT,
+        "--model",
+        EXTRACTION_MODEL,
         "--subject",
         subject,
         "--recent-days",
