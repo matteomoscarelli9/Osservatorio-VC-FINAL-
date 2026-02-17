@@ -804,6 +804,86 @@ def format_decimal_comma(value: str) -> str:
     return s
 
 
+def extract_company_from_bullet(bullet: str) -> str:
+    if not bullet:
+        return ""
+    m = re.match(r"^\s*([A-Za-z0-9&'().+\- ]+?)[,:\-]\s", bullet.strip())
+    if m:
+        return m.group(1).strip()
+    m = re.match(r"^\s*([A-Z][A-Za-z0-9&'().+\- ]{1,80})\s", bullet.strip())
+    return m.group(1).strip() if m else ""
+
+
+def extract_amount_from_bullet(bullet: str) -> str:
+    if not bullet:
+        return ""
+    txt = bullet.lower().replace(",", ".")
+    m = re.search(r"€\s*([0-9]+(?:\.[0-9]+)?)\s*([mk])\b", txt)
+    if m:
+        n = float(m.group(1))
+        unit = m.group(2)
+        if unit == "k":
+            n = n / 1000.0
+        out = f"{n:.3f}".rstrip("0").rstrip(".")
+        return out.replace(".", ",")
+    m = re.search(r"€\s*([0-9]+(?:\.[0-9]+)?)", txt)
+    if m:
+        return m.group(1).replace(".", ",")
+    return ""
+
+
+def extract_investors_from_bullet(bullet: str) -> List[str]:
+    if not bullet:
+        return []
+    m = re.search(r"\bfrom\s+(.+?)(?:\.\s*$|$)", bullet, flags=re.IGNORECASE)
+    if not m:
+        return []
+    tail = m.group(1).strip()
+    tail = re.sub(r"\band\b", ",", tail, flags=re.IGNORECASE)
+    investors = [x.strip(" .") for x in tail.split(",")]
+    return [x for x in investors if x]
+
+
+def synthesize_rows_for_missing_companies(
+    bullets: List[str],
+    rows: List[Dict[str, str]],
+    headers: List[str],
+    date_value: str,
+) -> List[Dict[str, str]]:
+    existing = {str(r.get("Company", "")).strip().lower() for r in rows if str(r.get("Company", "")).strip()}
+    synthesized = []
+    for b in bullets:
+        company = extract_company_from_bullet(b)
+        if not company:
+            continue
+        if company.strip().lower() in existing:
+            continue
+
+        row = {h: "" for h in headers if h}
+        row["Company"] = company
+        row["Date"] = date_value
+        row["Q"] = infer_quarter(date_value)
+        row["Round size (€M)"] = extract_amount_from_bullet(b)
+        row["Sector 1"] = infer_sector_from_bullet(company, [b])
+        row["HQ"] = "Italy"
+
+        inv = extract_investors_from_bullet(b)
+        if inv:
+            row["Lead"] = inv[0]
+        if len(inv) > 1:
+            row["Co-lead / follow 1"] = inv[1]
+        if len(inv) > 2:
+            row["follow 2"] = inv[2]
+        if len(inv) > 3:
+            row["follow 3"] = inv[3]
+        if len(inv) > 4:
+            row["follow 4"] = inv[4]
+
+        synthesized.append(row)
+        existing.add(company.strip().lower())
+    return synthesized
+
+
 def backfill_hq_from_cache(ws, header_row: int, headers: List[str], hq_cache: Dict[str, str]) -> int:
     header_map = {h: i + 1 for i, h in enumerate(headers) if h}
     if "Company" not in header_map or "HQ" not in header_map:
@@ -965,6 +1045,16 @@ def main():
             row["HQ"] = hq_cache[company]
         elif "HQ" in row:
             row["HQ"] = "Italy"
+
+    fallback_rows = synthesize_rows_for_missing_companies(
+        bullets=bullets,
+        rows=rows,
+        headers=headers,
+        date_value=parse_date_to_month_year(time_received),
+    )
+    if fallback_rows:
+        log_info(f"Synthesized {len(fallback_rows)} fallback rows for missing companies")
+        rows.extend(fallback_rows)
 
     if db_mode:
         inserted, inserted_companies = db_insert_rows(
