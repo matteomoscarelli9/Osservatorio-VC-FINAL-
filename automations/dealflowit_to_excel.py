@@ -500,28 +500,41 @@ def openai_extract_rows(bullets: List[str], headers: List[str], email_date: str,
         ],
     }
 
-    resp = client.responses.create(
-        model=model,
-        input=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
-        ],
-    )
+    def _extract(input_user: Dict[str, object]) -> List[Dict[str, str]]:
+        resp = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(input_user, ensure_ascii=False)},
+            ],
+        )
 
-    text = ""
-    if hasattr(resp, "output_text") and resp.output_text:
-        text = resp.output_text
-    else:
-        for item in getattr(resp, "output", []):
-            if getattr(item, "type", "") == "message":
-                for c in getattr(item, "content", []):
-                    if getattr(c, "type", "") == "output_text":
-                        text += c.text
+        text = ""
+        if hasattr(resp, "output_text") and resp.output_text:
+            text = resp.output_text
+        else:
+            for item in getattr(resp, "output", []):
+                if getattr(item, "type", "") == "message":
+                    for c in getattr(item, "content", []):
+                        if getattr(c, "type", "") == "output_text":
+                            text += c.text
 
-    text = text.strip()
-    if not text:
-        raise RuntimeError("Empty response from OpenAI")
-    return json.loads(text)
+        text = text.strip()
+        if not text:
+            raise RuntimeError("Empty response from OpenAI")
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            raise RuntimeError("OpenAI output is not a list")
+        return parsed
+
+    rows = _extract(user)
+    if bullets and len(rows) < len(bullets):
+        retry_user = dict(user)
+        retry_user["rules"] = list(user["rules"]) + [
+            f"You MUST return exactly {len(bullets)} items (one per bullet, preserving order)."
+        ]
+        rows = _extract(retry_user)
+    return rows
 
 
 def find_header_row(ws, header_name: str) -> int:

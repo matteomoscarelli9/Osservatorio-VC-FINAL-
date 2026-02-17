@@ -289,11 +289,17 @@ def rounds_distinct():
         conn.close()
         return jsonify({"status": "Error", "error": "Invalid col"}), 400
 
-    cur.execute(f'SELECT DISTINCT "{col}" FROM rounds')
-    values = [row[0] for row in cur.fetchall() if row[0] not in (None, "")]
-    cur.close()
-    conn.close()
-    return jsonify({"column": col, "values": values})
+    try:
+        cur.execute(f'SELECT DISTINCT "{col}" FROM rounds')
+        values = [row[0] for row in cur.fetchall() if row[0] not in (None, "")]
+        cur.close()
+        conn.close()
+        return jsonify({"column": col, "values": values})
+    except Exception as e:
+        cur.close()
+        conn.close()
+        # Keep UI usable even if a single distinct query fails.
+        return jsonify({"column": col, "values": [], "warning": f"distinct_failed: {e}"})
 
 
 @app.route("/api/chat", methods=["POST"])
