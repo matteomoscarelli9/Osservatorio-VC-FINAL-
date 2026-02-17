@@ -249,18 +249,41 @@ def fetch_latest_rss_message(rss_url: str, subject_contains: str, recent_days: i
         "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
         "Cache-Control": "no-cache",
     }
-    req = Request(rss_url, headers=headers)
-    try:
-        with urlopen(req, timeout=20) as resp:
-            payload = resp.read()
-    except Exception:
-        # Some providers only respond when URL ends with '/'
-        if not rss_url.endswith("/"):
-            req2 = Request(rss_url + "/", headers=headers)
-            with urlopen(req2, timeout=20) as resp:
+    candidates = []
+    base = rss_url.strip()
+    candidates.append(base)
+    if not base.endswith("/"):
+        candidates.append(base + "/")
+
+    # Common feed aliases for Substack/custom domains
+    if "/rss" in base:
+        root = base.split("/rss", 1)[0]
+        candidates.extend([f"{root}/feed", f"{root}/feed/"])
+    elif "/feed" in base:
+        root = base.split("/feed", 1)[0]
+        candidates.extend([f"{root}/rss", f"{root}/rss/"])
+
+    # Keep order but remove duplicates
+    seen = set()
+    uniq_candidates = []
+    for u in candidates:
+        if u not in seen:
+            uniq_candidates.append(u)
+            seen.add(u)
+
+    payload = None
+    errors = []
+    for url in uniq_candidates:
+        try:
+            req = Request(url, headers=headers)
+            with urlopen(req, timeout=20) as resp:
                 payload = resp.read()
-        else:
-            raise
+            break
+        except Exception as e:
+            errors.append(f"{url} -> {e}")
+
+    if payload is None:
+        raise RuntimeError("RSS fetch failed. Attempts: " + " | ".join(errors))
     root = ET.fromstring(payload)
 
     now = datetime.now()

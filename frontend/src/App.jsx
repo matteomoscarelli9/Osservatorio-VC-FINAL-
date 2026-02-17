@@ -201,7 +201,7 @@ export default function App() {
         body: JSON.stringify({
           subject: "TWIS",
           recent_days: 30,
-          rss_url: "https://dealflowit.niccolosanarico.com/rss"
+          rss_url: "https://dealflowit.niccolosanarico.com/feed"
         })
       });
       const data = await res.json();
