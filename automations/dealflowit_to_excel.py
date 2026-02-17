@@ -23,6 +23,10 @@ try:
     from openai import OpenAI
 except Exception:
     OpenAI = None
+try:
+    import psycopg
+except Exception:
+    psycopg = None
 
 SEP = "<<<SEP>>>"
 DEFAULT_HQ_CACHE = "/Users/matteomoscarelli/Documents/New project/automations/hq_cache.json"
@@ -602,12 +606,29 @@ def append_rows(
     return inserted, inserted_companies
 
 
-def db_read_headers(db_path: str) -> List[str]:
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    cur.execute("PRAGMA table_info(rounds)")
-    headers = [row[1] for row in cur.fetchall()]
-    conn.close()
+def db_read_headers(db_path: str, database_url: str = "") -> List[str]:
+    if database_url:
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed but --database-url was provided")
+        conn = psycopg.connect(database_url)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'rounds'
+            ORDER BY ordinal_position
+            """
+        )
+        headers = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+    else:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(rounds)")
+        headers = [row[1] for row in cur.fetchall()]
+        conn.close()
     if not headers:
         raise RuntimeError("Table 'rounds' not found in DB")
     return headers
@@ -617,15 +638,18 @@ def _qident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def db_is_duplicate(conn, company: str, date_val: str) -> bool:
+def db_is_duplicate(conn, company: str, date_val: str, pg_mode: bool = False) -> bool:
     if not company or not date_val:
         return False
+    p = "%s" if pg_mode else "?"
     cur = conn.cursor()
     cur.execute(
-        'SELECT 1 FROM rounds WHERE LOWER("Company") = LOWER(?) AND LOWER("Date") = LOWER(?) LIMIT 1',
+        f'SELECT 1 FROM rounds WHERE LOWER("Company") = LOWER({p}) AND LOWER("Date") = LOWER({p}) LIMIT 1',
         (str(company).strip(), str(date_val).strip()),
     )
-    return cur.fetchone() is not None
+    out = cur.fetchone() is not None
+    cur.close()
+    return out
 
 
 def db_insert_rows(
@@ -634,16 +658,23 @@ def db_insert_rows(
     rows: List[Dict[str, str]],
     dedup_company: str,
     dedup_date: str,
+    database_url: str = "",
 ) -> tuple[int, List[str]]:
     if dedup_company not in headers or dedup_date not in headers:
         raise RuntimeError("Dedup headers not found in DB table")
 
     insertable_headers = [h for h in headers if h != "id"]
     columns_sql = ", ".join(_qident(h) for h in insertable_headers)
-    placeholders_sql = ", ".join(["?"] * len(insertable_headers))
+    pg_mode = bool(database_url)
+    placeholders_sql = ", ".join(["%s" if pg_mode else "?"] * len(insertable_headers))
     insert_sql = f"INSERT INTO rounds ({columns_sql}) VALUES ({placeholders_sql})"
 
-    conn = sqlite3.connect(db_path)
+    if pg_mode:
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed but --database-url was provided")
+        conn = psycopg.connect(database_url)
+    else:
+        conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     inserted = 0
     inserted_companies = []
@@ -651,7 +682,7 @@ def db_insert_rows(
         for row in rows:
             company = row.get(dedup_company, "")
             date_val = row.get(dedup_date, "")
-            if db_is_duplicate(conn, company, date_val):
+            if db_is_duplicate(conn, company, date_val, pg_mode):
                 continue
             values = [row.get(h, "") for h in insertable_headers]
             cur.execute(insert_sql, values)
@@ -660,6 +691,7 @@ def db_insert_rows(
                 inserted_companies.append(str(company))
         conn.commit()
     finally:
+        cur.close()
         conn.close()
 
     return inserted, inserted_companies
@@ -783,6 +815,7 @@ def main():
     parser.add_argument("--path", default=EXCEL_PATH_DEFAULT, help="Path to Excel file")
     parser.add_argument("--sheet", default=SHEET_DEFAULT, help="Sheet name")
     parser.add_argument("--db", default="", help=f"SQLite DB path for direct insert (default: {DB_PATH_DEFAULT})")
+    parser.add_argument("--database-url", default="", help="Postgres connection URL for direct insert")
     parser.add_argument("--rss-url", default="", help="RSS URL to read the latest newsletter from")
     parser.add_argument("--sender", default="")
     parser.add_argument("--subject", default="TWIS")
@@ -797,14 +830,18 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-    db_mode = bool(args.db.strip())
+    db_mode = bool(args.db.strip() or args.database_url.strip())
     db_path = args.db.strip() or DB_PATH_DEFAULT
+    database_url = args.database_url.strip()
     log_info(
         f"Start run: sheet='{args.sheet}', recent_days={args.recent_days}, "
         f"use_current={args.use_current}, dry_run={args.dry_run}, backfill_hq={args.backfill_hq}"
     )
     if db_mode:
-        log_info(f"DB mode enabled. DB path: {db_path}")
+        if database_url:
+            log_info("DB mode enabled. Target: PostgreSQL")
+        else:
+            log_info(f"DB mode enabled. DB path: {db_path}")
     else:
         log_info(f"Excel path: {args.path}")
 
@@ -864,7 +901,7 @@ def main():
     ws = None
     header_row = None
     if db_mode:
-        headers = db_read_headers(db_path)
+        headers = db_read_headers(db_path, database_url)
     else:
         log_info("Opening workbook")
         wb = load_workbook(args.path)
@@ -923,6 +960,7 @@ def main():
             rows,
             dedup_company="Company",
             dedup_date="Date",
+            database_url=database_url,
         )
     else:
         inserted, inserted_companies = append_rows(
