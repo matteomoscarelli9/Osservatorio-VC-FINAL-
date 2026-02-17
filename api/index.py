@@ -3,6 +3,8 @@ import os
 import re
 import sqlite3
 import difflib
+import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -13,6 +15,7 @@ app = Flask(__name__)
 
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[1] / "db" / "rounds.db")
 DB_PATH = os.environ.get("DB_PATH", DEFAULT_DB_PATH)
+AUTOMATION_SCRIPT = str(Path(__file__).resolve().parents[1] / "automations" / "dealflowit_to_excel.py")
 
 
 @app.after_request
@@ -54,12 +57,63 @@ def ensure_db():
 
 @app.route("/api/run", methods=["POST"])
 def run_job():
+    payload = request.get_json(silent=True) or {}
+    use_current = bool(payload.get("use_current", False))
+    subject = str(payload.get("subject", "TWIS")).strip() or "TWIS"
+    sender = str(payload.get("sender", "")).strip()
+    recent_days = int(payload.get("recent_days", 30))
+    debug = bool(payload.get("debug", False))
+
+    if not os.path.exists(AUTOMATION_SCRIPT):
+        return jsonify({"status": "Error", "error": f"Automation script not found: {AUTOMATION_SCRIPT}"}), 500
+
+    cmd = [
+        "python3",
+        AUTOMATION_SCRIPT,
+        "--db",
+        DB_PATH,
+        "--subject",
+        subject,
+        "--recent-days",
+        str(recent_days),
+    ]
+    if sender:
+        cmd.extend(["--sender", sender])
+    if use_current:
+        cmd.append("--use-current")
+    if debug:
+        cmd.append("--debug")
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+        if "osascript" in err.lower() or "microsoft outlook" in err.lower():
+            err = (
+                "Outlook automation unavailable in this runtime. "
+                "Run /api/run from your local Mac environment where Outlook is installed and accessible."
+            )
+            return jsonify({"status": "Error", "error": err}), 501
+        return jsonify({"status": "Error", "error": err or "Run failed"}), 500
+
+    rows = 0
+    companies = []
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("RESULT_JSON:"):
+            try:
+                data = json.loads(line.replace("RESULT_JSON:", "", 1))
+                rows = int(data.get("rows", 0) or 0)
+                companies = data.get("companies", []) or []
+            except Exception:
+                pass
+
     return jsonify(
         {
-            "status": "Error",
-            "error": "Unsupported on Vercel: /api/run needs local Outlook + Excel automation. Use scheduled worker elsewhere."
+            "status": "Success",
+            "rows": rows,
+            "companies": companies,
+            "time": datetime.now().strftime("%d %b %Y · %H:%M"),
         }
-    ), 501
+    )
 
 
 @app.route("/api/sync", methods=["POST"])

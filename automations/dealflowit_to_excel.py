@@ -3,9 +3,11 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Tuple
 
 try:
@@ -22,6 +24,7 @@ SEP = "<<<SEP>>>"
 DEFAULT_HQ_CACHE = "/Users/matteomoscarelli/Documents/New project/automations/hq_cache.json"
 EXCEL_PATH_DEFAULT = "/Users/matteomoscarelli/Library/CloudStorage/OneDrive-Raccoltecondivise-UnitedVentures/United Ventures - United Ventures/04. Portfolio/Portfolio Team/100. OLD/07. Dealflow Meeting MM/Osservatorio VC Italy _.xlsx"
 SHEET_DEFAULT = "Funding rounds (3)"
+DB_PATH_DEFAULT = str(Path(__file__).resolve().parents[1] / "db" / "rounds.db")
 
 ALLOWED_SECTORS = [
     "Agritech",
@@ -492,6 +495,69 @@ def append_rows(
     return inserted, inserted_companies
 
 
+def db_read_headers(db_path: str) -> List[str]:
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(rounds)")
+    headers = [row[1] for row in cur.fetchall()]
+    conn.close()
+    if not headers:
+        raise RuntimeError("Table 'rounds' not found in DB")
+    return headers
+
+
+def _qident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def db_is_duplicate(conn, company: str, date_val: str) -> bool:
+    if not company or not date_val:
+        return False
+    cur = conn.cursor()
+    cur.execute(
+        'SELECT 1 FROM rounds WHERE LOWER("Company") = LOWER(?) AND LOWER("Date") = LOWER(?) LIMIT 1',
+        (str(company).strip(), str(date_val).strip()),
+    )
+    return cur.fetchone() is not None
+
+
+def db_insert_rows(
+    db_path: str,
+    headers: List[str],
+    rows: List[Dict[str, str]],
+    dedup_company: str,
+    dedup_date: str,
+) -> tuple[int, List[str]]:
+    if dedup_company not in headers or dedup_date not in headers:
+        raise RuntimeError("Dedup headers not found in DB table")
+
+    insertable_headers = [h for h in headers if h != "id"]
+    columns_sql = ", ".join(_qident(h) for h in insertable_headers)
+    placeholders_sql = ", ".join(["?"] * len(insertable_headers))
+    insert_sql = f"INSERT INTO rounds ({columns_sql}) VALUES ({placeholders_sql})"
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    inserted = 0
+    inserted_companies = []
+    try:
+        for row in rows:
+            company = row.get(dedup_company, "")
+            date_val = row.get(dedup_date, "")
+            if db_is_duplicate(conn, company, date_val):
+                continue
+            values = [row.get(h, "") for h in insertable_headers]
+            cur.execute(insert_sql, values)
+            inserted += 1
+            if company:
+                inserted_companies.append(str(company))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return inserted, inserted_companies
+
+
 def load_hq_cache(path: str) -> Dict[str, str]:
     if not path or not os.path.exists(path):
         return {}
@@ -609,6 +675,7 @@ def main():
     parser = argparse.ArgumentParser(description="Parse DealflowIT newsletter and append to Excel.")
     parser.add_argument("--path", default=EXCEL_PATH_DEFAULT, help="Path to Excel file")
     parser.add_argument("--sheet", default=SHEET_DEFAULT, help="Sheet name")
+    parser.add_argument("--db", default="", help=f"SQLite DB path for direct insert (default: {DB_PATH_DEFAULT})")
     parser.add_argument("--sender", default="")
     parser.add_argument("--subject", default="TWIS")
     parser.add_argument("--model", default="gpt-4.1-mini")
@@ -622,13 +689,18 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    db_mode = bool(args.db.strip())
+    db_path = args.db.strip() or DB_PATH_DEFAULT
     log_info(
         f"Start run: sheet='{args.sheet}', recent_days={args.recent_days}, "
         f"use_current={args.use_current}, dry_run={args.dry_run}, backfill_hq={args.backfill_hq}"
     )
-    log_info(f"Excel path: {args.path}")
+    if db_mode:
+        log_info(f"DB mode enabled. DB path: {db_path}")
+    else:
+        log_info(f"Excel path: {args.path}")
 
-    if load_workbook is None:
+    if not db_mode and load_workbook is None:
         raise RuntimeError("openpyxl not installed")
 
     if args.list_latest and args.list_latest > 0:
@@ -677,18 +749,25 @@ def main():
         return
     log_info(f"Extracted {len(bullets)} 'The Money' items")
 
-    log_info("Opening workbook")
-    wb = load_workbook(args.path)
-    if args.sheet not in wb.sheetnames:
-        raise RuntimeError(f"Sheet '{args.sheet}' not found in workbook")
-    ws = wb[args.sheet]
-
-    header_row = find_header_row(ws, "Company")
-    headers = read_headers(ws, header_row)
+    wb = None
+    ws = None
+    header_row = None
+    if db_mode:
+        headers = db_read_headers(db_path)
+    else:
+        log_info("Opening workbook")
+        wb = load_workbook(args.path)
+        if args.sheet not in wb.sheetnames:
+            raise RuntimeError(f"Sheet '{args.sheet}' not found in workbook")
+        ws = wb[args.sheet]
+        header_row = find_header_row(ws, "Company")
+        headers = read_headers(ws, header_row)
 
     hq_cache = load_hq_cache(args.hq_cache)
     log_info(f"HQ cache loaded entries: {len(hq_cache)}")
     if args.backfill_hq:
+        if db_mode:
+            raise RuntimeError("--backfill-hq is supported only in Excel mode")
         log_info("Running HQ backfill mode")
         updated = backfill_hq_from_cache(ws, header_row, headers, hq_cache)
         if args.dry_run:
@@ -726,14 +805,23 @@ def main():
         elif "HQ" in row:
             row["HQ"] = "Italy"
 
-    inserted, inserted_companies = append_rows(
-        ws,
-        header_row,
-        headers,
-        rows,
-        dedup_company="Company",
-        dedup_date="Date",
-    )
+    if db_mode:
+        inserted, inserted_companies = db_insert_rows(
+            db_path,
+            headers,
+            rows,
+            dedup_company="Company",
+            dedup_date="Date",
+        )
+    else:
+        inserted, inserted_companies = append_rows(
+            ws,
+            header_row,
+            headers,
+            rows,
+            dedup_company="Company",
+            dedup_date="Date",
+        )
 
     if args.dry_run:
         log_info(f"Dry run completed: would insert {inserted} rows")
@@ -741,8 +829,11 @@ def main():
         print("RESULT_JSON:" + json.dumps({"rows": inserted, "companies": inserted_companies}))
         return
 
-    wb.save(args.path)
-    log_info(f"Workbook saved. Inserted rows: {inserted}. Companies: {', '.join(inserted_companies) if inserted_companies else '-'}")
+    if db_mode:
+        log_info(f"DB updated. Inserted rows: {inserted}. Companies: {', '.join(inserted_companies) if inserted_companies else '-'}")
+    else:
+        wb.save(args.path)
+        log_info(f"Workbook saved. Inserted rows: {inserted}. Companies: {', '.join(inserted_companies) if inserted_companies else '-'}")
     print(f"Inserted {inserted} rows")
     print("RESULT_JSON:" + json.dumps({"rows": inserted, "companies": inserted_companies}))
 

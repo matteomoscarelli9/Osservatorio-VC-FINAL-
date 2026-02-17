@@ -16,6 +16,8 @@ export default function App() {
   const [chatQ, setChatQ] = useState("");
   const [chatA, setChatA] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [runLoading, setRunLoading] = useState(false);
+  const [runStatus, setRunStatus] = useState("");
 
   const t = lang === "it" ? {
     badge: "TWIS → Osservatorio VC",
@@ -36,6 +38,9 @@ export default function App() {
     chatPlaceholder: "Chiedi qualcosa ai dati (es. quanti round in Q1 2026?)",
     ask: "Chiedi",
     analyzing: "Analizzo...",
+    run: "RUN",
+    running: "Esecuzione in corso...",
+    runDone: "Aggiornamento completato",
     chatEmpty: "La risposta apparirà qui.",
     chartsYear: "Totale raccolto per anno (2022–2026)",
     chartsYearSub: "€M, aggiornato al dato disponibile",
@@ -65,6 +70,9 @@ export default function App() {
     chatPlaceholder: "Ask the data (e.g., how many rounds in Q1 2026?)",
     ask: "Ask",
     analyzing: "Analyzing...",
+    run: "RUN",
+    running: "Running...",
+    runDone: "Update completed",
     chatEmpty: "The answer will appear here.",
     chartsYear: "Total raised by year (2022–2026)",
     chartsYearSub: "€M, updated to date",
@@ -180,6 +188,31 @@ export default function App() {
       setChatA(`Errore: ${err.message}`);
     } finally {
       setChatLoading(false);
+    }
+  };
+
+  const handleRun = async () => {
+    setRunLoading(true);
+    setRunStatus(t.running);
+    try {
+      const res = await fetch(`${API_BASE}/api/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject: "TWIS", recent_days: 30 })
+      });
+      const data = await res.json();
+      if (!res.ok || data.status === "Error") {
+        throw new Error(data.error || "Run failed");
+      }
+      setRunStatus(`${t.runDone}: ${data.rows || 0} righe`);
+      setDbPage(0);
+      setDbFilters({});
+      await loadDb(0, "", {});
+      await loadStats();
+    } catch (err) {
+      setRunStatus(`Errore RUN: ${err.message}`);
+    } finally {
+      setRunLoading(false);
     }
   };
 
@@ -321,16 +354,27 @@ export default function App() {
           <div>
             <h2>{t.dbTitle}</h2>
             <p>{t.dbSubtitle}</p>
+            {runStatus ? <p className="run-status">{runStatus}</p> : null}
           </div>
-          <form className="search" onSubmit={handleSearch}>
-            <input
-              type="text"
-              placeholder={t.searchPlaceholder}
-              value={dbSearch}
-              onChange={(e) => setDbSearch(e.target.value)}
-            />
-            <button type="submit">{t.search}</button>
-          </form>
+          <div className="db-actions">
+            <button
+              type="button"
+              className="run-btn"
+              onClick={handleRun}
+              disabled={runLoading}
+            >
+              {runLoading ? t.running : t.run}
+            </button>
+            <form className="search" onSubmit={handleSearch}>
+              <input
+                type="text"
+                placeholder={t.searchPlaceholder}
+                value={dbSearch}
+                onChange={(e) => setDbSearch(e.target.value)}
+              />
+              <button type="submit">{t.search}</button>
+            </form>
+          </div>
         </div>
 
         <div className="db-table">
