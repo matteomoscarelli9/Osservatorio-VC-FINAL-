@@ -33,6 +33,7 @@ DEFAULT_HQ_CACHE = "/Users/matteomoscarelli/Documents/New project/automations/hq
 EXCEL_PATH_DEFAULT = "/Users/matteomoscarelli/Library/CloudStorage/OneDrive-Raccoltecondivise-UnitedVentures/United Ventures - United Ventures/04. Portfolio/Portfolio Team/100. OLD/07. Dealflow Meeting MM/Osservatorio VC Italy _.xlsx"
 SHEET_DEFAULT = "Funding rounds (3)"
 DB_PATH_DEFAULT = str(Path(__file__).resolve().parents[1] / "db" / "rounds.db")
+HQ_ENRICH_MODEL_DEFAULT = os.environ.get("OPENAI_HQ_MODEL", "gpt-4.1-mini")
 
 ALLOWED_SECTORS = [
     "Agritech",
@@ -826,6 +827,64 @@ def db_read_hq_overrides(db_path: str, database_url: str = "") -> Dict[str, str]
     return out
 
 
+def db_upsert_hq_overrides(db_path: str, database_url: str, overrides: Dict[str, str]) -> None:
+    if not overrides:
+        return
+    if database_url:
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed but --database-url was provided")
+        conn = psycopg.connect(database_url)
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.hq_overrides (
+                    "Company" text PRIMARY KEY,
+                    "HQ" text NOT NULL
+                )
+                """
+            )
+            for company, city in overrides.items():
+                cur.execute(
+                    """
+                    INSERT INTO public.hq_overrides ("Company", "HQ")
+                    VALUES (%s, %s)
+                    ON CONFLICT ("Company") DO UPDATE SET "HQ" = EXCLUDED."HQ"
+                    """,
+                    (company, city),
+                )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+        return
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hq_overrides (
+                "Company" TEXT PRIMARY KEY,
+                "HQ" TEXT NOT NULL
+            )
+            """
+        )
+        for company, city in overrides.items():
+            cur.execute(
+                """
+                INSERT INTO hq_overrides ("Company", "HQ")
+                VALUES (?, ?)
+                ON CONFLICT("Company") DO UPDATE SET "HQ" = excluded."HQ"
+                """,
+                (company, city),
+            )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
 def _qident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
@@ -1081,6 +1140,11 @@ def find_company_bullet(company: str, bullets: List[str]) -> str:
     return ""
 
 
+def is_generic_hq(value: str) -> bool:
+    v = str(value or "").strip().lower()
+    return v in ("", "italy", "italia", "<city>", "city", "unknown", "n/a", "na", "nd")
+
+
 def resolve_hq(
     company: str,
     current_hq: str,
@@ -1090,7 +1154,7 @@ def resolve_hq(
     db_hq_map: Dict[str, str],
 ) -> str:
     cur = str(current_hq or "").strip()
-    if cur and cur.lower() != "italy":
+    if cur and not is_generic_hq(cur):
         return cur
     key = str(company or "").strip().lower()
     if key and key in hq_overrides and hq_overrides[key]:
@@ -1103,6 +1167,70 @@ def resolve_hq(
     if inferred:
         return inferred
     return "Italy"
+
+
+def openai_enrich_hq_overrides(
+    rows: List[Dict[str, str]],
+    bullets: List[str],
+    model: str = HQ_ENRICH_MODEL_DEFAULT,
+) -> Dict[str, str]:
+    if OpenAI is None:
+        return {}
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return {}
+
+    unresolved = []
+    seen = set()
+    for r in rows:
+        company = str(r.get("Company", "")).strip()
+        if not company:
+            continue
+        if not is_generic_hq(r.get("HQ", "")):
+            continue
+        key = company.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unresolved.append({"company": company, "bullet": find_company_bullet(company, bullets)})
+    if not unresolved:
+        return {}
+
+    client = OpenAI(api_key=api_key)
+    system = (
+        "Extract headquarters city for Italian startups. "
+        "Return JSON array only, one item per input item, preserving order. "
+        'Each item keys: "company", "city". '
+        "If city is uncertain, return empty city."
+    )
+    user = {"items": unresolved}
+
+    try:
+        resp = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+            ],
+        )
+        text = resp.output_text if hasattr(resp, "output_text") and resp.output_text else ""
+        if not text:
+            return {}
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            return {}
+        out = {}
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            company = str(item.get("company", "")).strip()
+            city = re.sub(r"\s+", " ", str(item.get("city", "")).strip()).strip(" .,-")
+            if not company or not city or is_generic_hq(city):
+                continue
+            out[company] = city
+        return out
+    except Exception:
+        return {}
 
 
 def synthesize_rows_for_missing_companies(
@@ -1184,6 +1312,7 @@ def main():
     parser.add_argument("--sender", default="")
     parser.add_argument("--subject", default="TWIS")
     parser.add_argument("--model", default="gpt-5.2")
+    parser.add_argument("--hq-model", default=HQ_ENRICH_MODEL_DEFAULT, help="OpenAI model for HQ city enrichment")
     parser.add_argument("--after", default="", help="Filter emails received on/after this date (YYYY-MM-DD)")
     parser.add_argument("--before", default="", help="Filter emails received on/before this date (YYYY-MM-DD)")
     parser.add_argument("--recent-days", type=int, default=30, help="Only scan emails from the last N days")
@@ -1318,6 +1447,18 @@ def main():
         company = str(row.get("Company", "")).strip()
         related_bullet = find_company_bullet(company, bullets)
         row["HQ"] = resolve_hq(company, row.get("HQ", ""), related_bullet, hq_overrides, hq_cache, db_hq_map)
+
+    # Auto-enrich HQ city for unresolved companies and persist into hq_overrides.
+    inferred_overrides = openai_enrich_hq_overrides(rows, bullets, args.hq_model)
+    if inferred_overrides:
+        log_info(f"Auto-enriched HQ city for {len(inferred_overrides)} companies")
+        for row in rows:
+            company = str(row.get("Company", "")).strip()
+            if company in inferred_overrides:
+                row["HQ"] = inferred_overrides[company]
+        hq_overrides.update({k.strip().lower(): v for k, v in inferred_overrides.items()})
+        if db_mode:
+            db_upsert_hq_overrides(db_path, database_url, inferred_overrides)
 
     # Guardrail: skip malformed extracted rows (event-like noise without round size)
     rows = [
