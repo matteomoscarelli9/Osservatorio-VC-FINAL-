@@ -1198,26 +1198,38 @@ def openai_enrich_hq_overrides(
 
     client = OpenAI(api_key=api_key)
     system = (
-        "Extract headquarters city for Italian startups. "
+        "Find the headquarters city for each company. "
+        "Use web sources when needed (company website, LinkedIn, trusted profiles). "
         "Return JSON array only, one item per input item, preserving order. "
         'Each item keys: "company", "city". '
-        "If city is uncertain, return empty city."
+        "City must be a concrete city name only (no country, no placeholders). "
+        "If uncertain, return empty city."
     )
     user = {"items": unresolved}
 
     try:
-        resp = client.responses.create(
-            model=model,
-            input=[
+        request_payload = {
+            "model": model,
+            "input": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
             ],
-        )
+        }
+        # Try with web search enabled first.
+        try:
+            resp = client.responses.create(
+                **request_payload,
+                tools=[{"type": "web_search_preview"}],
+            )
+        except Exception:
+            resp = client.responses.create(**request_payload)
         text = resp.output_text if hasattr(resp, "output_text") and resp.output_text else ""
         if not text:
+            log_info("HQ enrichment: empty response from OpenAI")
             return {}
         parsed = json.loads(text)
         if not isinstance(parsed, list):
+            log_info("HQ enrichment: invalid non-list JSON response")
             return {}
         out = {}
         for item in parsed:
@@ -1229,7 +1241,8 @@ def openai_enrich_hq_overrides(
                 continue
             out[company] = city
         return out
-    except Exception:
+    except Exception as e:
+        log_info(f"HQ enrichment failed: {e}")
         return {}
 
 
