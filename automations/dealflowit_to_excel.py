@@ -561,7 +561,7 @@ def openai_extract_rows(bullets: List[str], headers: List[str], email_date: str,
             "Map company name to 'Company'.",
             "Map sector or description to 'Sector 1' using ONLY allowed_sectors. Always choose the closest fit; do not leave empty.",
             "Leave 'Tag' empty.",
-            "Leave 'HQ' empty (it will be filled from lookup).",
+            "Set 'HQ' to the city if explicitly available in the bullet; otherwise leave it empty.",
             "Map round size in € millions to 'Round size (€M)' as a number string.",
             "Set 'Date' to the month+year of the email if not explicit (e.g., 'Feb 2026').",
             "Set 'Q' from the Date if possible (e.g., 'Q1 2026').",
@@ -766,6 +766,31 @@ def db_read_headers(db_path: str, database_url: str = "") -> List[str]:
     if not headers:
         raise RuntimeError("Table 'rounds' not found in DB")
     return headers
+
+
+def db_read_company_hq_map(db_path: str, database_url: str = "") -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if database_url:
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed but --database-url was provided")
+        conn = psycopg.connect(database_url)
+    else:
+        conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute('SELECT "Company", "HQ" FROM rounds WHERE "Company" IS NOT NULL AND "HQ" IS NOT NULL')
+        for company, hq in cur.fetchall():
+            c = str(company or "").strip().lower()
+            h = str(hq or "").strip()
+            if not c or not h:
+                continue
+            if h.lower() == "italy":
+                continue
+            out[c] = h
+    finally:
+        cur.close()
+        conn.close()
+    return out
 
 
 def _qident(name: str) -> str:
@@ -992,12 +1017,68 @@ def extract_investors_from_bullet(bullet: str) -> List[str]:
     return [x for x in investors if x]
 
 
+def infer_hq_from_bullet(bullet: str) -> str:
+    if not bullet:
+        return ""
+    s = bullet.strip()
+    city_phrase = r"(?:[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'.-]{1,30}(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'.-]{1,30}){0,2})"
+    patterns = [
+        rf"\b({city_phrase})-based\b",
+        rf"\bbased in\s+({city_phrase})\b",
+        r"\bcon sede a\s+([A-Z][A-Za-zÀ-ÖØ-öø-ÿ' .-]{1,40})\b",
+        r"\bcon sede in\s+([A-Z][A-Za-zÀ-ÖØ-öø-ÿ' .-]{1,40})\b",
+        rf"\bheadquartered in\s+({city_phrase})\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, s, flags=re.IGNORECASE)
+        if m:
+            city = re.sub(r"\s+", " ", m.group(1)).strip(" .,-")
+            if city and len(city) >= 2:
+                return city
+    return ""
+
+
+def find_company_bullet(company: str, bullets: List[str]) -> str:
+    comp = str(company or "").strip().lower()
+    if not comp:
+        return ""
+    for b in bullets:
+        if comp in str(b).lower():
+            return b
+    return ""
+
+
+def resolve_hq(
+    company: str,
+    current_hq: str,
+    bullet: str,
+    hq_cache: Dict[str, str],
+    db_hq_map: Dict[str, str],
+) -> str:
+    cur = str(current_hq or "").strip()
+    if cur and cur.lower() != "italy":
+        return cur
+    key = str(company or "").strip().lower()
+    if key and key in hq_cache and hq_cache[key]:
+        return hq_cache[key]
+    if key and key in db_hq_map and db_hq_map[key]:
+        return db_hq_map[key]
+    inferred = infer_hq_from_bullet(bullet)
+    if inferred:
+        return inferred
+    return "Italy"
+
+
 def synthesize_rows_for_missing_companies(
     bullets: List[str],
     rows: List[Dict[str, str]],
     headers: List[str],
     date_value: str,
+    hq_cache: Dict[str, str] | None = None,
+    db_hq_map: Dict[str, str] | None = None,
 ) -> List[Dict[str, str]]:
+    hq_cache = hq_cache or {}
+    db_hq_map = db_hq_map or {}
     existing = {str(r.get("Company", "")).strip().lower() for r in rows if str(r.get("Company", "")).strip()}
     synthesized = []
     for b in bullets:
@@ -1017,7 +1098,7 @@ def synthesize_rows_for_missing_companies(
         if not row["Round size (€M)"]:
             continue
         row["Sector 1"] = infer_sector_from_bullet(company, [b])
-        row["HQ"] = "Italy"
+        row["HQ"] = resolve_hq(company, "", b, hq_cache, db_hq_map)
 
         inv = extract_investors_from_bullet(b)
         if inv:
@@ -1147,6 +1228,7 @@ def main():
     header_row = None
     if db_mode:
         headers = db_read_headers(db_path, database_url)
+        db_hq_map = db_read_company_hq_map(db_path, database_url)
     else:
         log_info("Opening workbook")
         wb = load_workbook(args.path)
@@ -1155,6 +1237,7 @@ def main():
         ws = wb[args.sheet]
         header_row = find_header_row(ws, "Company")
         headers = read_headers(ws, header_row)
+        db_hq_map = {}
 
     hq_cache = load_hq_cache(args.hq_cache)
     log_info(f"HQ cache loaded entries: {len(hq_cache)}")
@@ -1191,12 +1274,10 @@ def main():
         # Format Round size (€M) with comma decimal
         if "Round size (€M)" in row:
             row["Round size (€M)"] = format_decimal_comma(row.get("Round size (€M)", ""))
-        # Fill HQ from cache if available, else default to Italy
-        company = str(row.get("Company", "")).strip().lower()
-        if company and "HQ" in row and company in hq_cache:
-            row["HQ"] = hq_cache[company]
-        elif "HQ" in row:
-            row["HQ"] = "Italy"
+        # Fill HQ with priority: extracted value -> cache -> DB-known city -> bullet inference.
+        company = str(row.get("Company", "")).strip()
+        related_bullet = find_company_bullet(company, bullets)
+        row["HQ"] = resolve_hq(company, row.get("HQ", ""), related_bullet, hq_cache, db_hq_map)
 
     # Guardrail: skip malformed extracted rows (event-like noise without round size)
     rows = [
@@ -1210,6 +1291,8 @@ def main():
         rows=rows,
         headers=headers,
         date_value=parse_date_to_month_year(time_received),
+        hq_cache=hq_cache,
+        db_hq_map=db_hq_map,
     )
     if fallback_rows:
         log_info(f"Synthesized {len(fallback_rows)} fallback rows for missing companies")

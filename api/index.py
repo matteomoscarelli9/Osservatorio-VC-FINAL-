@@ -61,6 +61,34 @@ def ph():
     return "%s" if USE_POSTGRES else "?"
 
 
+def round_size_expr_sql() -> str:
+    if USE_POSTGRES:
+        return (
+            'CAST(NULLIF('
+            "REGEXP_REPLACE(REPLACE(REPLACE(COALESCE(\"Round size (€M)\", ''), ',', '.'), '€', ''), '[^0-9.\\-]', '', 'g')"
+            ", '') AS DOUBLE PRECISION)"
+        )
+    return (
+        'CAST(NULLIF('
+        'REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE("Round size (€M)", \'\'), \',\', \'.\'), \'€\', \'\'), \' \', \'\'), \'M\', \'\'), \'m\', \'\')'
+        ", '') AS REAL)"
+    )
+
+
+def parse_filter_number(value: str):
+    s = str(value or "").strip()
+    if not s:
+        return None
+    s = s.replace(",", ".")
+    s = re.sub(r"[^0-9.\-]", "", s)
+    if not s:
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
 def get_rounds_columns(cur):
     if USE_POSTGRES:
         cur.execute(
@@ -272,7 +300,7 @@ def rounds_query():
 
     where_clauses = []
     params = []
-    amount_expr = 'COALESCE(CAST(REPLACE("Round size (€M)", ",", ".") AS REAL), 0)'
+    amount_expr = round_size_expr_sql()
     for col, value in filters.items():
         if col not in cols:
             continue
@@ -281,19 +309,28 @@ def rounds_query():
         if col == "Round size (€M)":
             token = str(value)
             if token.startswith("lt:"):
-                where_clauses.append(f"{amount_expr} < {placeholder}")
-                params.append(float(token.split(":", 1)[1]))
+                v = parse_filter_number(token.split(":", 1)[1])
+                if v is not None:
+                    where_clauses.append(f"{amount_expr} < {placeholder}")
+                    params.append(v)
             elif token.startswith("gt:"):
-                where_clauses.append(f"{amount_expr} > {placeholder}")
-                params.append(float(token.split(":", 1)[1]))
+                v = parse_filter_number(token.split(":", 1)[1])
+                if v is not None:
+                    where_clauses.append(f"{amount_expr} > {placeholder}")
+                    params.append(v)
             elif token.startswith("between:"):
                 parts = token.split(":")
                 if len(parts) == 3:
-                    where_clauses.append(f"{amount_expr} BETWEEN {placeholder} AND {placeholder}")
-                    params.extend([float(parts[1]), float(parts[2])])
+                    lo = parse_filter_number(parts[1])
+                    hi = parse_filter_number(parts[2])
+                    if lo is not None and hi is not None:
+                        where_clauses.append(f"{amount_expr} BETWEEN {placeholder} AND {placeholder}")
+                        params.extend([lo, hi])
             else:
-                where_clauses.append(f"{amount_expr} = {placeholder}")
-                params.append(float(token))
+                v = parse_filter_number(token)
+                if v is not None:
+                    where_clauses.append(f"{amount_expr} = {placeholder}")
+                    params.append(v)
         else:
             where_clauses.append(f'LOWER("{col}") LIKE LOWER({placeholder})')
             params.append(f"%{value}%")
@@ -355,7 +392,7 @@ def chat():
     conn = db_conn()
     cur = conn.cursor()
     placeholder = ph()
-    amount_expr = 'COALESCE(CAST(REPLACE("Round size (€M)", ",", ".") AS REAL), 0)'
+    amount_expr = round_size_expr_sql()
 
     def distinct(col):
         cur.execute(f'SELECT DISTINCT "{col}" FROM rounds')
