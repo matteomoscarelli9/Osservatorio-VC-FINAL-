@@ -5,6 +5,8 @@ import sqlite3
 import difflib
 import subprocess
 import importlib.util
+import inspect
+import hashlib
 from datetime import datetime
 from pathlib import Path
 
@@ -185,12 +187,15 @@ def debug_rss_bullets():
         mod = _load_automation_module()
         msg_subject, time_received, body = mod.fetch_latest_rss_message(rss_url, subject, recent_days)
         bullets = mod.extract_the_money_section(body)
+        extractor_src = inspect.getsource(mod.extract_the_money_section)
+        extractor_signature = hashlib.sha1(extractor_src.encode("utf-8")).hexdigest()[:12]
         return jsonify(
             {
                 "status": "Success",
                 "rss_url": rss_url,
                 "subject_selected": msg_subject,
                 "time_received": time_received,
+                "extractor_signature": extractor_signature,
                 "bullet_count": len(bullets),
                 "bullets": bullets,
             }
