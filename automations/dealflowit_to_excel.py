@@ -793,6 +793,39 @@ def db_read_company_hq_map(db_path: str, database_url: str = "") -> Dict[str, st
     return out
 
 
+def db_read_hq_overrides(db_path: str, database_url: str = "") -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if database_url:
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed but --database-url was provided")
+        conn = psycopg.connect(database_url)
+        pg_mode = True
+    else:
+        conn = sqlite3.connect(db_path)
+        pg_mode = False
+    cur = conn.cursor()
+    try:
+        if pg_mode:
+            cur.execute("SELECT to_regclass('public.hq_overrides')")
+            exists = cur.fetchone()[0] is not None
+        else:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='hq_overrides'")
+            exists = cur.fetchone() is not None
+        if not exists:
+            return {}
+        cur.execute('SELECT "Company", "HQ" FROM hq_overrides WHERE "Company" IS NOT NULL AND "HQ" IS NOT NULL')
+        for company, hq in cur.fetchall():
+            c = str(company or "").strip().lower()
+            h = str(hq or "").strip()
+            if not c or not h:
+                continue
+            out[c] = h
+    finally:
+        cur.close()
+        conn.close()
+    return out
+
+
 def _qident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
@@ -1052,6 +1085,7 @@ def resolve_hq(
     company: str,
     current_hq: str,
     bullet: str,
+    hq_overrides: Dict[str, str],
     hq_cache: Dict[str, str],
     db_hq_map: Dict[str, str],
 ) -> str:
@@ -1059,6 +1093,8 @@ def resolve_hq(
     if cur and cur.lower() != "italy":
         return cur
     key = str(company or "").strip().lower()
+    if key and key in hq_overrides and hq_overrides[key]:
+        return hq_overrides[key]
     if key and key in hq_cache and hq_cache[key]:
         return hq_cache[key]
     if key and key in db_hq_map and db_hq_map[key]:
@@ -1074,9 +1110,11 @@ def synthesize_rows_for_missing_companies(
     rows: List[Dict[str, str]],
     headers: List[str],
     date_value: str,
+    hq_overrides: Dict[str, str] | None = None,
     hq_cache: Dict[str, str] | None = None,
     db_hq_map: Dict[str, str] | None = None,
 ) -> List[Dict[str, str]]:
+    hq_overrides = hq_overrides or {}
     hq_cache = hq_cache or {}
     db_hq_map = db_hq_map or {}
     existing = {str(r.get("Company", "")).strip().lower() for r in rows if str(r.get("Company", "")).strip()}
@@ -1098,7 +1136,7 @@ def synthesize_rows_for_missing_companies(
         if not row["Round size (€M)"]:
             continue
         row["Sector 1"] = infer_sector_from_bullet(company, [b])
-        row["HQ"] = resolve_hq(company, "", b, hq_cache, db_hq_map)
+        row["HQ"] = resolve_hq(company, "", b, hq_overrides, hq_cache, db_hq_map)
 
         inv = extract_investors_from_bullet(b)
         if inv:
@@ -1228,6 +1266,7 @@ def main():
     header_row = None
     if db_mode:
         headers = db_read_headers(db_path, database_url)
+        hq_overrides = db_read_hq_overrides(db_path, database_url)
         db_hq_map = db_read_company_hq_map(db_path, database_url)
     else:
         log_info("Opening workbook")
@@ -1237,6 +1276,7 @@ def main():
         ws = wb[args.sheet]
         header_row = find_header_row(ws, "Company")
         headers = read_headers(ws, header_row)
+        hq_overrides = {}
         db_hq_map = {}
 
     hq_cache = load_hq_cache(args.hq_cache)
@@ -1277,7 +1317,7 @@ def main():
         # Fill HQ with priority: extracted value -> cache -> DB-known city -> bullet inference.
         company = str(row.get("Company", "")).strip()
         related_bullet = find_company_bullet(company, bullets)
-        row["HQ"] = resolve_hq(company, row.get("HQ", ""), related_bullet, hq_cache, db_hq_map)
+        row["HQ"] = resolve_hq(company, row.get("HQ", ""), related_bullet, hq_overrides, hq_cache, db_hq_map)
 
     # Guardrail: skip malformed extracted rows (event-like noise without round size)
     rows = [
@@ -1291,6 +1331,7 @@ def main():
         rows=rows,
         headers=headers,
         date_value=parse_date_to_month_year(time_received),
+        hq_overrides=hq_overrides,
         hq_cache=hq_cache,
         db_hq_map=db_hq_map,
     )
