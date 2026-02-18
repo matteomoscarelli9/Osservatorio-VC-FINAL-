@@ -90,6 +90,112 @@ def parse_filter_number(value: str):
         return None
 
 
+def infer_intent_from_question(question: str) -> dict:
+    q = (question or "").strip()
+    ql = q.lower()
+    intent = {"metric": "count", "subject": "rounds", "group_by": None, "top_n": None, "filters": {}}
+
+    if any(k in ql for k in ["how many companies", "quante societ", "numero di societ", "number of companies"]):
+        intent["subject"] = "companies"
+        intent["metric"] = "count"
+    elif any(k in ql for k in ["totale raccolto", "total raised", "quanto raccolto", "somma raccolta", "raccolto"]):
+        intent["subject"] = "amount"
+        intent["metric"] = "sum"
+    elif any(k in ql for k in ["media", "average", "avg"]):
+        intent["subject"] = "amount"
+        intent["metric"] = "avg"
+    elif any(k in ql for k in ["massimo", "max", "largest", "biggest"]):
+        intent["subject"] = "amount"
+        intent["metric"] = "max"
+    elif any(k in ql for k in ["minimo", "min", "smallest"]):
+        intent["subject"] = "amount"
+        intent["metric"] = "min"
+
+    if any(k in ql for k in ["per settore", "per settori", "by sector", "sectors"]) or ("settor" in ql):
+        intent["group_by"] = "sector"
+    elif any(k in ql for k in ["per citta", "per città", "by city", "cities"]):
+        intent["group_by"] = "city"
+    elif any(k in ql for k in ["per azienda", "by company"]):
+        intent["group_by"] = "company"
+    elif any(k in ql for k in ["per lead", "by lead"]):
+        intent["group_by"] = "lead"
+    elif any(k in ql for k in ["per anno", "by year"]):
+        intent["group_by"] = "year"
+    elif any(k in ql for k in ["per quarter", "per trimestre", "by quarter"]):
+        intent["group_by"] = "quarter"
+
+    m_top = re.search(r"\btop\s+(\d{1,3})\b", ql)
+    if m_top:
+        intent["top_n"] = int(m_top.group(1))
+
+    m_q = re.search(r"\bq([1-4])\s*(20\d{2})\b", ql, flags=re.IGNORECASE)
+    if m_q:
+        intent["filters"]["quarter_eq"] = f"Q{m_q.group(1)} {m_q.group(2)}"
+        intent["filters"]["year_eq"] = m_q.group(2)
+    else:
+        m_year = re.search(r"\b(20\d{2})\b", ql)
+        if m_year:
+            intent["filters"]["year_eq"] = m_year.group(1)
+
+    m_min = re.search(
+        r"\b(?:minimo|almeno|at least|over|oltre|above|greater than)\s*€?\s*([0-9]+(?:[.,][0-9]+)?)\s*([mk])?\b",
+        ql,
+        flags=re.IGNORECASE,
+    )
+    if m_min:
+        val = float(m_min.group(1).replace(",", "."))
+        unit = (m_min.group(2) or "").lower()
+        if unit == "k":
+            val = val / 1000.0
+        intent["filters"]["min_amount"] = val
+
+    return intent
+
+
+def normalize_intent(intent: dict, question: str) -> dict:
+    allowed_metric = {"count", "sum", "avg", "max", "min"}
+    allowed_subject = {"rounds", "amount", "companies"}
+    allowed_group_by = {"company", "city", "sector", "year", "lead", "quarter", None}
+    out = intent if isinstance(intent, dict) else {}
+    metric = str(out.get("metric", "")).lower().strip() or "count"
+    subject = str(out.get("subject", "")).lower().strip() or "rounds"
+    group_by = out.get("group_by")
+    group_by = str(group_by).lower().strip() if group_by else None
+    top_n = out.get("top_n")
+    filters = out.get("filters") if isinstance(out.get("filters"), dict) else {}
+
+    if metric not in allowed_metric:
+        metric = "count"
+    if subject not in allowed_subject:
+        subject = "rounds"
+    if group_by not in allowed_group_by:
+        group_by = None
+    try:
+        top_n = int(top_n) if top_n is not None else None
+    except Exception:
+        top_n = None
+    if top_n is not None:
+        top_n = max(1, min(top_n, 200))
+
+    # Heuristic fallback/merge from raw question.
+    heur = infer_intent_from_question(question)
+    if not out:
+        return heur
+    if metric == "count" and heur.get("metric") in {"sum", "avg", "max", "min"}:
+        metric = heur["metric"]
+        subject = heur.get("subject", subject)
+    if subject == "rounds" and heur.get("subject") == "companies":
+        subject = "companies"
+    if group_by is None and heur.get("group_by"):
+        group_by = heur["group_by"]
+    if top_n is None and heur.get("top_n"):
+        top_n = heur["top_n"]
+    for k, v in heur.get("filters", {}).items():
+        filters.setdefault(k, v)
+
+    return {"metric": metric, "subject": subject, "group_by": group_by, "top_n": top_n, "filters": filters}
+
+
 def get_rounds_columns(cur):
     if USE_POSTGRES:
         cur.execute(
@@ -458,11 +564,11 @@ def chat():
     intent = None
     try:
         system = (
-            "Extract intent to query a SQLite database of Italian funding rounds. "
+            "Extract intent to query a database of Italian funding rounds. "
             "Return JSON only with keys: metric, subject, group_by, top_n, filters. "
             "metric: count|sum|avg|max|min. subject: rounds|amount|companies. "
             "group_by: company|city|sector|year|lead|quarter|null. "
-            "filters may include: year_eq, year_from, year_to, company, city, sector, lead, min_amount."
+            "filters may include: year_eq, year_from, year_to, quarter_eq, company, city, sector, lead, min_amount."
         )
         user = {"question": question}
         resp = client.responses.create(
@@ -472,8 +578,9 @@ def chat():
         raw = resp.output_text if hasattr(resp, "output_text") else ""
         intent = json.loads(raw)
     except Exception:
-        intent = {"metric": "count", "subject": "rounds", "group_by": None, "top_n": None, "filters": {}}
+        intent = {}
 
+    intent = normalize_intent(intent, question)
     metric = intent.get("metric")
     subject = intent.get("subject")
     group_by = intent.get("group_by") or None
@@ -484,6 +591,8 @@ def chat():
     filters["sector"] = map_entity(filters.get("sector"), sectors)
     filters["city"] = map_entity(filters.get("city"), cities)
     filters["lead"] = map_entity(filters.get("lead"), leads)
+    if filters.get("min_amount") is not None:
+        filters["min_amount"] = parse_filter_number(filters.get("min_amount"))
 
     clauses = []
     params = []
@@ -509,6 +618,9 @@ def chat():
     elif filters.get("year_eq"):
         clauses.append(f'"Date" LIKE {placeholder}')
         params.append(f'%{filters["year_eq"]}%')
+    if filters.get("quarter_eq"):
+        clauses.append(f'LOWER("Q") LIKE LOWER({placeholder})')
+        params.append(f'%{filters["quarter_eq"]}%')
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     group_map = {
@@ -521,27 +633,28 @@ def chat():
     }
 
     if subject == "companies" and metric == "count":
-        if filters.get("min_amount"):
+        if filters.get("min_amount") is not None:
             sql = (
                 f'SELECT COUNT(*) AS company_count FROM ('
                 f'SELECT "Company", SUM({amount_expr}) AS total_raised '
                 f'FROM rounds {where_sql} GROUP BY "Company" '
                 f'HAVING total_raised > {placeholder})'
             )
-            params.append(float(filters["min_amount"]))
+            params.append(filters["min_amount"])
         else:
             sql = f'SELECT COUNT(DISTINCT "Company") AS company_count FROM rounds {where_sql}'
     elif subject == "rounds" and metric == "count":
         if group_by in group_map:
             group_col = group_map[group_by]
-            sql = f'SELECT {group_col} AS group_key, COUNT(*) AS round_count FROM rounds {where_sql} GROUP BY {group_col} ORDER BY round_count DESC LIMIT {top_n or 200}'
+            sql = f'SELECT {group_col} AS group_key, COUNT(*) AS round_count FROM rounds {where_sql} GROUP BY {group_col} ORDER BY round_count DESC LIMIT {top_n or 20}'
         else:
             sql = f'SELECT COUNT(*) AS round_count FROM rounds {where_sql}'
     elif subject == "amount":
-        agg = "SUM" if metric in ("sum", "max") else "AVG"
+        agg_map = {"sum": "SUM", "avg": "AVG", "max": "MAX", "min": "MIN"}
+        agg = agg_map.get(metric, "SUM")
         if group_by in group_map:
             group_col = group_map[group_by]
-            sql = f'SELECT {group_col} AS group_key, {agg}({amount_expr}) AS total_raised FROM rounds {where_sql} GROUP BY {group_col} ORDER BY total_raised DESC LIMIT {top_n or 200}'
+            sql = f'SELECT {group_col} AS group_key, {agg}({amount_expr}) AS total_raised FROM rounds {where_sql} GROUP BY {group_col} ORDER BY total_raised DESC LIMIT {top_n or 20}'
         else:
             sql = f'SELECT {agg}({amount_expr}) AS total_raised FROM rounds {where_sql}'
     else:
@@ -558,13 +671,30 @@ def chat():
     cur.close()
     conn.close()
 
+    if "round_count" in col_names and "group_key" in col_names:
+        items = [f"{r[0]} ({r[1]})" for r in rows[:5] if r and r[0] not in (None, "")]
+        return jsonify({"status": "Success", "answer": ("Top: " + ", ".join(items)) if items else "Nessun risultato."})
     if "round_count" in col_names:
         return jsonify({"status": "Success", "answer": f"Totale round: {rows[0][0] if rows else 0}"})
     if "company_count" in col_names:
         return jsonify({"status": "Success", "answer": f"Numero di societa: {rows[0][0] if rows else 0}"})
     if "total_raised" in col_names and "group_key" in col_names and rows:
-        return jsonify({"status": "Success", "answer": f"Top: {rows[0][0]} ({rows[0][1]}M)"})
+        items = []
+        for r in rows[:5]:
+            if not r or r[0] in (None, ""):
+                continue
+            try:
+                amt = float(r[1])
+                items.append(f"{r[0]} ({amt:.2f}M)")
+            except Exception:
+                items.append(f"{r[0]} ({r[1]}M)")
+        return jsonify({"status": "Success", "answer": ("Top: " + ", ".join(items)) if items else "Nessun risultato."})
     if "total_raised" in col_names:
-        return jsonify({"status": "Success", "answer": f"Totale raccolto: {rows[0][0] if rows else 0}M"})
+        val = rows[0][0] if rows else 0
+        try:
+            val = f"{float(val):.2f}"
+        except Exception:
+            pass
+        return jsonify({"status": "Success", "answer": f"Totale raccolto: {val}M"})
 
     return jsonify({"status": "Success", "answer": "Nessun risultato."})
