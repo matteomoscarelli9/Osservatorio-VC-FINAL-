@@ -9,6 +9,7 @@ import inspect
 import hashlib
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, request
 from openai import OpenAI
@@ -219,6 +220,17 @@ def monday_cron_run():
         auth = request.headers.get("authorization", "")
         if auth != f"Bearer {cron_secret}":
             return jsonify({"status": "Error", "error": "Unauthorized"}), 401
+
+    # Enforce exact local schedule: only run at 09:10 Europe/Rome.
+    now_rome = datetime.now(ZoneInfo("Europe/Rome"))
+    if not (now_rome.weekday() == 0 and now_rome.hour == 9 and now_rome.minute == 10):
+        return jsonify(
+            {
+                "status": "Skipped",
+                "reason": "outside_target_local_time",
+                "local_time_rome": now_rome.strftime("%Y-%m-%d %H:%M"),
+            }
+        )
 
     payload = {
         "subject": "TWIS",

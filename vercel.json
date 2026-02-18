@@ -7,6 +7,7 @@
     { "src": "/api/(.*)", "dest": "api/index.py" }
   ],
   "crons": [
+    { "path": "/api/cron/monday-run", "schedule": "10 7 * * 1" },
     { "path": "/api/cron/monday-run", "schedule": "10 8 * * 1" }
   ]
 }
