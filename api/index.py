@@ -130,15 +130,14 @@ def _load_automation_module():
     return module
 
 
-@app.route("/api/run", methods=["POST"])
-def run_job():
-    payload = request.get_json(silent=True) or {}
+def _run_automation(payload: dict):
     use_current = bool(payload.get("use_current", False))
     subject = str(payload.get("subject", "TWIS")).strip() or "TWIS"
     sender = str(payload.get("sender", "")).strip()
     rss_url = str(payload.get("rss_url", "")).strip()
     recent_days = int(payload.get("recent_days", 30))
     debug = bool(payload.get("debug", False))
+    hq_model = str(payload.get("hq_model", os.environ.get("OPENAI_HQ_MODEL", "gpt-4.1-mini"))).strip()
 
     if not os.path.exists(AUTOMATION_SCRIPT):
         return jsonify({"status": "Error", "error": f"Automation script not found: {AUTOMATION_SCRIPT}"}), 500
@@ -148,6 +147,8 @@ def run_job():
         AUTOMATION_SCRIPT,
         "--model",
         EXTRACTION_MODEL,
+        "--hq-model",
+        hq_model,
         "--subject",
         subject,
         "--recent-days",
@@ -169,7 +170,6 @@ def run_job():
     proc = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
     run_stdout = (proc.stdout or "").strip()
     run_stderr = (proc.stderr or "").strip()
-    # Emit script output to runtime logs for easier debugging from Vercel.
     if run_stdout:
         print(f"[api/run stdout]\n{run_stdout}", flush=True)
     if run_stderr:
@@ -204,6 +204,30 @@ def run_job():
             "time": datetime.now().strftime("%d %b %Y · %H:%M"),
         }
     )
+
+
+@app.route("/api/run", methods=["POST"])
+def run_job():
+    payload = request.get_json(silent=True) or {}
+    return _run_automation(payload)
+
+
+@app.route("/api/cron/monday-run", methods=["GET"])
+def monday_cron_run():
+    cron_secret = os.environ.get("CRON_SECRET", "").strip()
+    if cron_secret:
+        auth = request.headers.get("authorization", "")
+        if auth != f"Bearer {cron_secret}":
+            return jsonify({"status": "Error", "error": "Unauthorized"}), 401
+
+    payload = {
+        "subject": "TWIS",
+        "recent_days": 30,
+        "rss_url": "https://dealflowit.niccolosanarico.com/feed",
+        "use_current": False,
+        "debug": False,
+    }
+    return _run_automation(payload)
 
 
 @app.route("/api/debug/rss-bullets", methods=["GET"])

@@ -5,5 +5,8 @@
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "api/index.py" }
+  ],
+  "crons": [
+    { "path": "/api/cron/monday-run", "schedule": "10 8 * * 1" }
   ]
 }
