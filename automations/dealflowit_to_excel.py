@@ -231,12 +231,17 @@ def strip_html_to_text(raw: str) -> str:
     if not raw:
         return ""
     txt = raw
+    # Keep block structure so section headings and bullets remain separable.
+    txt = re.sub(r"(?i)</(h[1-6]|div|section|article|ul|ol|table|tr)>", "\n", txt)
+    txt = re.sub(r"(?i)<(h[1-6]|div|section|article|ul|ol|table|tr)[^>]*>", "\n", txt)
     txt = re.sub(r"(?i)<br\\s*/?>", "\n", txt)
     txt = re.sub(r"(?i)</p>", "\n", txt)
     txt = re.sub(r"(?i)</li>", "\n", txt)
-    txt = re.sub(r"(?i)<li[^>]*>", "• ", txt)
+    txt = re.sub(r"(?i)<li[^>]*>", "\n• ", txt)
     txt = re.sub(r"<[^>]+>", "", txt)
     txt = html.unescape(txt)
+    txt = txt.replace("\xa0", " ")
+    txt = re.sub(r"[ \t]+", " ", txt)
     txt = re.sub(r"\n{3,}", "\n\n", txt)
     return txt.strip()
 
@@ -334,14 +339,27 @@ def extract_the_money_section(body: str) -> List[str]:
         return []
     # Normalize line endings
     text = body.replace("\r\n", "\n").replace("\r", "\n")
-    # Find "The Money" header (allow emoji/punctuation)
-    money_idx = re.search(r"(?i)(?:^|\n).*the\s+money\b", text)
+    # Find "The Money" header (allow emoji/punctuation). Prefer a heading-like match.
+    money_idx = re.search(r"(?im)^\s*the\s+money\b[^\n]*$", text)
+    if not money_idx:
+        # Fallback: first "The Money" occurrence that has bullet-like content nearby.
+        for m in re.finditer(r"(?i)the\s+money\b", text):
+            window = text[m.end() : m.end() + 2000]
+            if re.search(r"(?:^|\n)\s*[•\-*]\s*", window) or re.search(
+                r"\b(raised|secured|closed|bagged|landed|collected)\b", window, flags=re.IGNORECASE
+            ):
+                money_idx = m
+                break
     if not money_idx:
         return []
     start = money_idx.end()
     tail = text[start:]
-    # Stop at next section-like heading (e.g., "The Buzz", "The People", "The Rundown")
-    m = re.search(r"\n\s*the\s+[a-z][a-z\s]+\n", tail, flags=re.IGNORECASE)
+    # Stop at next section-like heading (e.g., "The Buzz", "M&A", "Reading this week").
+    m = re.search(
+        r"\n\s*(?:the\s+[a-z][a-z\s]+|m\s*&\s*a|reading\s+this\s+week)\b[^\n]*\n",
+        tail,
+        flags=re.IGNORECASE,
+    )
     if m:
         tail = tail[: m.start()]
 
@@ -363,12 +381,55 @@ def extract_the_money_section(body: str) -> List[str]:
     # Fallback: if no bullets found, treat sentence-like lines as bullets
     if not bullets:
         bullets = lines
-    # Keep only funding bullets from The Money section.
-    funding_bullets = [
-        b for b in bullets
-        if re.search(r"\braised\b", b, flags=re.IGNORECASE) and ("€" in b or "eur" in b.lower())
-    ]
-    return funding_bullets if funding_bullets else bullets
+
+    cleaned = []
+    for b in bullets:
+        # Cut tail sections often merged into the last bullet in RSS plain text.
+        b = re.split(r"\bM&A\b|\bReading this week\b", b, flags=re.IGNORECASE)[0].strip()
+        if b:
+            cleaned.append(b)
+
+    # If a bullet contains multiple "X, ... raised ..." chunks, split by company-starts.
+    # Avoid sentence/dot-based splitting because decimal amounts (e.g. €1.7m) include dots.
+    split_chunks = []
+    company_raised_pattern = re.compile(
+        r"(?:^|(?<=[.;!?])\s+|[•\-*]\s*)([A-Z][A-Za-z0-9&'().+\- ]{1,80},[^\n]*?\braised\b)",
+        flags=re.IGNORECASE,
+    )
+    for b in cleaned:
+        starts = [m.start(1) for m in company_raised_pattern.finditer(b)]
+        if len(starts) <= 1:
+            split_chunks.append(b)
+            continue
+
+        starts.append(len(b))
+        for i in range(len(starts) - 1):
+            chunk = b[starts[i]:starts[i + 1]].strip(" \t\n\r•-")
+            if chunk:
+                split_chunks.append(chunk)
+
+    def has_funding_signal(text: str) -> bool:
+        if not re.search(r"\b(raised|secured|closed|bagged|landed|collected)\b", text, flags=re.IGNORECASE):
+            return False
+        # Accept euro symbol, eur token, or compact amount formats like 7m / 550k.
+        if "€" in text or re.search(r"\beur\b", text, flags=re.IGNORECASE):
+            return True
+        return re.search(r"\b\d+(?:[.,]\d+)?\s*[mk]\b", text, flags=re.IGNORECASE) is not None
+
+    def has_mna_signal(text: str) -> bool:
+        return re.search(
+            r"\b(acquired|acquires|acquisition|majority\s+stake|minority\s+stake|merger|merged)\b",
+            text,
+            flags=re.IGNORECASE,
+        ) is not None
+
+    # Strictly keep The Money and exclude M&A-like items if they leak from malformed HTML.
+    split_chunks = [b for b in split_chunks if not has_mna_signal(b)]
+
+    # Keep all remaining The Money items, with funding-like items first.
+    funding_bullets = [b for b in split_chunks if has_funding_signal(b)]
+    non_funding_bullets = [b for b in split_chunks if b not in funding_bullets]
+    return funding_bullets + non_funding_bullets
 
 
 def parse_outlook_datetime(date_str: str) -> datetime | None:
@@ -886,6 +947,13 @@ def extract_company_from_bullet(bullet: str) -> str:
     m = re.search(r"([A-Z][A-Za-z0-9&'().+\- ]{1,80}?)\s*,[^.]{0,180}\braised\b", s, flags=re.IGNORECASE)
     if m:
         return re.sub(r"\s+", " ", m.group(1).strip())
+    m = re.search(
+        r"^\s*([A-Z][A-Za-z0-9&'().+\- ]{1,80}?)\s+(?:raised|secured|closed|bagged|landed|collected)\b",
+        s,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        return re.sub(r"\s+", " ", m.group(1).strip())
     m = re.match(r"^\s*([A-Z][A-Za-z0-9&'().+\- ]{1,80})\s", s)
     return re.sub(r"\s+", " ", m.group(1).strip()) if m else ""
 
@@ -929,7 +997,7 @@ def synthesize_rows_for_missing_companies(
     existing = {str(r.get("Company", "")).strip().lower() for r in rows if str(r.get("Company", "")).strip()}
     synthesized = []
     for b in bullets:
-        if "raised" not in b.lower():
+        if not re.search(r"\b(raised|secured|closed|bagged|landed|collected)\b", b, flags=re.IGNORECASE):
             continue
         company = extract_company_from_bullet(b)
         if not company:
