@@ -339,8 +339,10 @@ def extract_the_money_section(body: str) -> List[str]:
         return []
     # Normalize line endings
     text = body.replace("\r\n", "\n").replace("\r", "\n")
-    # Find "The Money" header (allow emoji/punctuation). Prefer a heading-like match.
-    money_idx = re.search(r"(?im)^\s*the\s+money\b[^\n]*$", text)
+    # Find "The Money" marker.
+    # Important: do not consume the entire line because some RSS payloads append the
+    # first bullet on the same line as the heading ("The Money 💰• ...").
+    money_idx = re.search(r"(?im)^\s*the\s+money\b[^\n•]*", text)
     if not money_idx:
         # Fallback: first "The Money" occurrence that has bullet-like content nearby.
         for m in re.finditer(r"(?i)the\s+money\b", text):
@@ -354,6 +356,9 @@ def extract_the_money_section(body: str) -> List[str]:
         return []
     start = money_idx.end()
     tail = text[start:]
+    # Defensive normalization: some RSS HTML collapses heading + first bullet on one line
+    # (e.g. "The Money 💰• Company..."), which would otherwise drop the first item.
+    tail = re.sub(r"\s*•\s*", "\n• ", tail)
     # Stop at next section-like heading (e.g., "The Buzz", "M&A", "Reading this week").
     m = re.search(
         r"\n\s*(?:the\s+[a-z][a-z\s]+|m\s*&\s*a|reading\s+this\s+week)\b[^\n]*\n",
@@ -426,10 +431,9 @@ def extract_the_money_section(body: str) -> List[str]:
     # Strictly keep The Money and exclude M&A-like items if they leak from malformed HTML.
     split_chunks = [b for b in split_chunks if not has_mna_signal(b)]
 
-    # Keep all remaining The Money items, with funding-like items first.
+    # Keep funding-like items when available (The Money rounds).
     funding_bullets = [b for b in split_chunks if has_funding_signal(b)]
-    non_funding_bullets = [b for b in split_chunks if b not in funding_bullets]
-    return funding_bullets + non_funding_bullets
+    return funding_bullets if funding_bullets else split_chunks
 
 
 def parse_outlook_datetime(date_str: str) -> datetime | None:
