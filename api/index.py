@@ -681,7 +681,9 @@ def rounds():
 
     if search:
         placeholder = ph()
-        like_clause = " OR ".join([f'"{c}" LIKE {placeholder}' for c in cols])
+        like_clause = " OR ".join(
+            [f'LOWER(COALESCE(CAST("{c}" AS TEXT), \'\')) LIKE LOWER({placeholder})' for c in cols]
+        )
         params = [f"%{search}%"] * len(cols)
         query = f"SELECT * FROM rounds WHERE {like_clause} ORDER BY id DESC LIMIT {placeholder} OFFSET {placeholder}"
         cur.execute(query, params + [limit, offset])
