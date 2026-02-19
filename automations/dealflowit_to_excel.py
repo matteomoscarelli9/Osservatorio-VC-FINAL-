@@ -66,6 +66,11 @@ CITY_ALIAS_TO_EN = {
     "vicenza": "Vicenza",
     "poggibonsi": "Poggibonsi",
     "bovisio": "Bovisio",
+    "laquila": "L'Aquila",
+    "l aquila": "L'Aquila",
+    "lacquila": "L'Aquila",
+    "l acquila": "L'Aquila",
+    "berlino": "Berlin",
 }
 
 ALLOWED_SECTORS = [
@@ -119,6 +124,21 @@ def _normalize_city_key(value: str) -> str:
     return s
 
 
+def _is_non_city_token(token: str) -> bool:
+    k = _normalize_city_key(token)
+    if not k:
+        return True
+    if k in {
+        "italy", "italia", "us", "usa", "uk", "eu", "europe",
+        "veneto", "apulia", "sud sardegna",
+    }:
+        return True
+    bad_fragments = (
+        "provincia", "region", "county", "state", "country", "metropolitan",
+    )
+    return any(f in k for f in bad_fragments)
+
+
 def normalize_city_name(value: str) -> str:
     s = str(value or "").strip()
     if not s:
@@ -133,6 +153,8 @@ def normalize_city_name(value: str) -> str:
     for p in parts:
         key = _normalize_city_key(p)
         if not key:
+            continue
+        if _is_non_city_token(p):
             continue
         if key in CITY_ALIAS_TO_EN:
             normalized_parts.append(CITY_ALIAS_TO_EN[key])

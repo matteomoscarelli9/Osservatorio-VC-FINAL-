@@ -58,6 +58,11 @@ CITY_ALIAS_TO_EN = {
     "vicenza": "Vicenza",
     "poggibonsi": "Poggibonsi",
     "bovisio": "Bovisio",
+    "laquila": "L'Aquila",
+    "l aquila": "L'Aquila",
+    "lacquila": "L'Aquila",
+    "l acquila": "L'Aquila",
+    "berlino": "Berlin",
 }
 ITALIAN_CITY_EN = {
     "Milan", "Turin", "Rome", "Naples", "Florence", "Venice", "Genoa", "Padua",
@@ -132,6 +137,21 @@ def is_generic_hq(value: str) -> bool:
     return v in ("", "italy", "italia", "<city>", "city", "unknown", "n/a", "na", "nd")
 
 
+def _is_non_city_token(token: str) -> bool:
+    k = _normalize_city_key(token)
+    if not k:
+        return True
+    if k in {
+        "italy", "italia", "us", "usa", "uk", "eu", "europe",
+        "veneto", "apulia", "sud sardegna",
+    }:
+        return True
+    bad_fragments = (
+        "provincia", "region", "county", "state", "country", "metropolitan",
+    )
+    return any(f in k for f in bad_fragments)
+
+
 def _normalize_city_key(value: str) -> str:
     s = str(value or "").strip().lower()
     s = unicodedata.normalize("NFKD", s)
@@ -144,6 +164,8 @@ def _normalize_city_key(value: str) -> str:
 def _city_from_single_token(token: str) -> str:
     key = _normalize_city_key(token)
     if not key:
+        return ""
+    if _is_non_city_token(token):
         return ""
     if key in CITY_ALIAS_TO_EN:
         return CITY_ALIAS_TO_EN[key]
@@ -178,6 +200,19 @@ def normalize_city_name(value: str) -> str:
 
 
 def build_company_hq_map(cur) -> dict:
+    overrides = {}
+    for table in ('public.hq_overrides', 'hq_overrides'):
+        try:
+            cur.execute(f'SELECT "Company", "HQ" FROM {table}')
+            for company, hq in cur.fetchall():
+                ck = str(company or "").strip().lower()
+                city = normalize_city_name(hq)
+                if ck and city:
+                    overrides[ck] = city
+            break
+        except Exception:
+            continue
+
     cur.execute('SELECT id, "Company", "HQ" FROM rounds WHERE COALESCE("Company", \'\') <> \'\'')
     stats = {}
     for rid, company, hq in cur.fetchall():
@@ -191,6 +226,7 @@ def build_company_hq_map(cur) -> dict:
     out = {}
     for ck, city_stats in stats.items():
         out[ck] = sorted(city_stats.items(), key=lambda kv: (kv[1][0], kv[1][1]), reverse=True)[0][0]
+    out.update(overrides)
     return out
 
 
@@ -200,7 +236,7 @@ def apply_canonical_hq(rows: list, company_hq_map: dict) -> list:
         current = normalize_city_name(r.get("HQ", ""))
         if company and company in company_hq_map:
             r["HQ"] = company_hq_map[company]
-        elif current:
+        else:
             r["HQ"] = current
     return rows
 
@@ -690,19 +726,8 @@ def rounds_distinct():
 
     try:
         if col == "HQ":
-            cur.execute('SELECT "Company", "HQ" FROM rounds WHERE COALESCE("Company", \'\') <> \'\'')
-            stats = {}
-            for company, hq in cur.fetchall():
-                ck = str(company or "").strip().lower()
-                city = normalize_city_name(hq)
-                if not ck or not city:
-                    continue
-                stats.setdefault(ck, {})
-                stats[ck][city] = stats[ck].get(city, 0) + 1
-            canon = []
-            for _, city_stats in stats.items():
-                canon.append(sorted(city_stats.items(), key=lambda kv: kv[1], reverse=True)[0][0])
-            values = sorted(set(canon))
+            company_hq_map = build_company_hq_map(cur)
+            values = sorted(set(company_hq_map.values()))
             cur.close()
             conn.close()
             return jsonify({"column": col, "values": values})
