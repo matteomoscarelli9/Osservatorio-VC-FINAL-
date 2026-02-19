@@ -104,7 +104,8 @@ export default function App() {
         const res = await fetch(`${API_BASE}/api/rounds/query`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ filters, limit, offset })
+          body: JSON.stringify({ filters, limit, offset }),
+          cache: "no-store"
         });
         const data = await res.json();
         setDbRows(data.rows || []);
@@ -114,7 +115,9 @@ export default function App() {
         setDbCols(cols);
         await loadFilterOptions(cols);
       } else {
-        const res = await fetch(`${API_BASE}/api/rounds?limit=${limit}&offset=${offset}&search=${encodeURIComponent(search)}`);
+        const res = await fetch(`${API_BASE}/api/rounds?limit=${limit}&offset=${offset}&search=${encodeURIComponent(search)}&t=${Date.now()}`, {
+          cache: "no-store"
+        });
         const data = await res.json();
         setDbRows(data.rows || []);
         const cols = (data.columns || [])
@@ -137,7 +140,9 @@ export default function App() {
             next[c] = roundSizeBuckets.map((b) => b.value);
             return;
           }
-          const res = await fetch(`${API_BASE}/api/rounds/distinct?col=${encodeURIComponent(c)}`);
+          const res = await fetch(`${API_BASE}/api/rounds/distinct?col=${encodeURIComponent(c)}&t=${Date.now()}`, {
+            cache: "no-store"
+          });
           const data = await res.json();
           next[c] = (data.values || []).sort();
         } catch {
@@ -222,7 +227,9 @@ export default function App() {
 
   const loadStats = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/rounds?limit=10000&offset=0&search=`);
+      const res = await fetch(`${API_BASE}/api/rounds?limit=10000&offset=0&search=&t=${Date.now()}`, {
+        cache: "no-store"
+      });
       const data = await res.json();
       setStatsRows(data.rows || []);
     } catch {
@@ -232,6 +239,14 @@ export default function App() {
 
   useEffect(() => {
     loadStats();
+  }, []);
+
+  useEffect(() => {
+    const onFocus = () => {
+      loadStats();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
 
   const totalsByYear = useMemo(() => {
