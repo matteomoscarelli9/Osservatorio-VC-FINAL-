@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import uvLogo from "./assets/uv-logo.png";
 
 export default function App() {
@@ -12,7 +12,13 @@ export default function App() {
   const [dbLoading, setDbLoading] = useState(false);
   const [dbFilters, setDbFilters] = useState({});
   const [filterOptions, setFilterOptions] = useState({});
-  const [statsRows, setStatsRows] = useState([]);
+  const [statsData, setStatsData] = useState({
+    totalsByYear: [],
+    topSectors: [],
+    topCities: [],
+    roundsByYear: [],
+    checks: {}
+  });
   const [chatQ, setChatQ] = useState("");
   const [chatA, setChatA] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -227,13 +233,25 @@ export default function App() {
 
   const loadStats = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/rounds?limit=10000&offset=0&search=&t=${Date.now()}`, {
+      const res = await fetch(`${API_BASE}/api/stats?t=${Date.now()}`, {
         cache: "no-store"
       });
       const data = await res.json();
-      setStatsRows(data.rows || []);
+      setStatsData({
+        totalsByYear: data.totals_by_year || [],
+        topSectors: data.top_sectors || [],
+        topCities: data.top_cities || [],
+        roundsByYear: data.rounds_by_year || [],
+        checks: data.checks || {}
+      });
     } catch {
-      setStatsRows([]);
+      setStatsData({
+        totalsByYear: [],
+        topSectors: [],
+        topCities: [],
+        roundsByYear: [],
+        checks: {}
+      });
     }
   };
 
@@ -249,53 +267,10 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  const totalsByYear = useMemo(() => {
-    const years = ["2022", "2023", "2024", "2025", "2026"];
-    const totals = Object.fromEntries(years.map((y) => [y, 0]));
-    statsRows.forEach((row) => {
-      const year = getYear(row.Date);
-      if (!year || !(year in totals)) return;
-      totals[year] += parseAmount(row["Round size (€M)"]);
-    });
-    return years.map((y) => ({ year: y, total: totals[y] }));
-  }, [statsRows]);
-
-  const topSectors = useMemo(() => {
-    const totals = {};
-    statsRows.forEach((row) => {
-      const sector = row["Sector 1"] || "Altro";
-      const val = parseAmount(row["Round size (€M)"]);
-      totals[sector] = (totals[sector] || 0) + val;
-    });
-    return Object.entries(totals)
-      .map(([sector, total]) => ({ sector, total }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 6);
-  }, [statsRows]);
-
-  const topCities = useMemo(() => {
-    const totals = {};
-    statsRows.forEach((row) => {
-      const city = row.HQ || "ND";
-      const val = parseAmount(row["Round size (€M)"]);
-      totals[city] = (totals[city] || 0) + val;
-    });
-    return Object.entries(totals)
-      .map(([city, total]) => ({ city, total }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 6);
-  }, [statsRows]);
-
-  const roundsByYear = useMemo(() => {
-    const years = ["2022", "2023", "2024", "2025", "2026"];
-    const counts = Object.fromEntries(years.map((y) => [y, 0]));
-    statsRows.forEach((row) => {
-      const year = getYear(row.Date);
-      if (!year || !(year in counts)) return;
-      counts[year] += 1;
-    });
-    return years.map((y) => ({ year: y, count: counts[y] }));
-  }, [statsRows]);
+  const totalsByYear = statsData.totalsByYear || [];
+  const topSectors = statsData.topSectors || [];
+  const topCities = statsData.topCities || [];
+  const roundsByYear = statsData.roundsByYear || [];
 
   const maxYearTotal = Math.max(1, ...totalsByYear.map((d) => d.total));
   const maxSectorTotal = Math.max(1, ...topSectors.map((d) => d.total));
@@ -643,16 +618,4 @@ function formatMonthYear(value) {
     return `${months[parseInt(m, 10) - 1]} ${y}`;
   }
   return str;
-}
-
-function parseAmount(value) {
-  if (value === null || value === undefined) return 0;
-  const num = parseFloat(String(value).replace(",", ".").replace(/[^\d.]/g, ""));
-  return Number.isFinite(num) ? num : 0;
-}
-
-function getYear(value) {
-  if (!value) return null;
-  const match = String(value).match(/\b(20\d{2})\b/);
-  return match ? match[1] : null;
 }

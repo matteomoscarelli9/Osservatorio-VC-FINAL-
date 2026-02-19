@@ -132,6 +132,30 @@ def parse_filter_number(value: str):
         return None
 
 
+def parse_amount_value(value) -> float:
+    s = str(value or "").strip()
+    if not s:
+        return 0.0
+    s = s.replace("€", "").replace("M", "").replace("m", "").replace(" ", "")
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(",", ".")
+    s = re.sub(r"[^0-9.\-]", "", s)
+    try:
+        return float(s) if s else 0.0
+    except Exception:
+        return 0.0
+
+
+def extract_year(value: str):
+    m = re.search(r"\b(20\d{2})\b", str(value or ""))
+    return m.group(1) if m else None
+
+
 def is_generic_hq(value: str) -> bool:
     v = str(value or "").strip().lower()
     return v in ("", "italy", "italia", "<city>", "city", "unknown", "n/a", "na", "nd")
@@ -630,6 +654,67 @@ def rounds():
     data = [dict(zip(col_names, row)) for row in rows]
     data = apply_canonical_hq(data, company_hq_map)
     return jsonify({"rows": data, "columns": col_names})
+
+
+@app.route("/api/stats", methods=["GET"])
+def stats():
+    ensure_db()
+    conn = db_conn()
+    cur = conn.cursor()
+    company_hq_map = build_company_hq_map(cur)
+    cur.execute('SELECT "Company","HQ","Sector 1","Date","Round size (€M)" FROM rounds')
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    year_totals = {}
+    year_counts = {}
+    sector_totals = {}
+    city_totals = {}
+
+    for company, hq, sector, date_value, amount_raw in rows:
+        amount = parse_amount_value(amount_raw)
+        year = extract_year(date_value)
+        if year:
+            year_totals[year] = year_totals.get(year, 0.0) + amount
+            year_counts[year] = year_counts.get(year, 0) + 1
+
+        sector_key = str(sector or "").strip() or "Altro"
+        sector_totals[sector_key] = sector_totals.get(sector_key, 0.0) + amount
+
+        company_key = str(company or "").strip().lower()
+        city = ""
+        if company_key and company_key in company_hq_map:
+            city = company_hq_map[company_key]
+        else:
+            city = normalize_city_name(hq)
+        city_key = city or "ND"
+        city_totals[city_key] = city_totals.get(city_key, 0.0) + amount
+
+    years_sorted = sorted(year_totals.keys())
+    totals_by_year = [{"year": y, "total": round(year_totals.get(y, 0.0), 6)} for y in years_sorted]
+    rounds_by_year = [{"year": y, "count": int(year_counts.get(y, 0))} for y in years_sorted]
+    top_sectors = [
+        {"sector": k, "total": round(v, 6)}
+        for k, v in sorted(sector_totals.items(), key=lambda kv: kv[1], reverse=True)[:6]
+    ]
+    top_cities = [
+        {"city": k, "total": round(v, 6)}
+        for k, v in sorted(city_totals.items(), key=lambda kv: kv[1], reverse=True)[:6]
+    ]
+
+    return jsonify(
+        {
+            "rows": len(rows),
+            "totals_by_year": totals_by_year,
+            "rounds_by_year": rounds_by_year,
+            "top_sectors": top_sectors,
+            "top_cities": top_cities,
+            "checks": {
+                "enterprise_tech_total": round(sector_totals.get("Enterprise Tech", 0.0), 6),
+            },
+        }
+    )
 
 
 @app.route("/api/rounds/query", methods=["POST"])
