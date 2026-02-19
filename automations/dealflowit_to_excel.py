@@ -7,6 +7,8 @@ import re
 import sqlite3
 import subprocess
 import sys
+import difflib
+import unicodedata
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -34,6 +36,37 @@ EXCEL_PATH_DEFAULT = "/Users/matteomoscarelli/Library/CloudStorage/OneDrive-Racc
 SHEET_DEFAULT = "Funding rounds (3)"
 DB_PATH_DEFAULT = str(Path(__file__).resolve().parents[1] / "db" / "rounds.db")
 HQ_ENRICH_MODEL_DEFAULT = os.environ.get("OPENAI_HQ_MODEL", "gpt-4.1-mini")
+
+CITY_ALIAS_TO_EN = {
+    "milano": "Milan",
+    "milan": "Milan",
+    "torino": "Turin",
+    "turin": "Turin",
+    "roma": "Rome",
+    "rome": "Rome",
+    "napoli": "Naples",
+    "naples": "Naples",
+    "firenze": "Florence",
+    "florence": "Florence",
+    "venezia": "Venice",
+    "venice": "Venice",
+    "genova": "Genoa",
+    "genoa": "Genoa",
+    "padova": "Padua",
+    "padua": "Padua",
+    "bologna": "Bologna",
+    "bergamo": "Bergamo",
+    "parma": "Parma",
+    "pisa": "Pisa",
+    "modena": "Modena",
+    "trento": "Trento",
+    "trieste": "Trieste",
+    "brescia": "Brescia",
+    "verona": "Verona",
+    "vicenza": "Vicenza",
+    "poggibonsi": "Poggibonsi",
+    "bovisio": "Bovisio",
+}
 
 ALLOWED_SECTORS = [
     "Agritech",
@@ -75,6 +108,34 @@ ALLOWED_SECTORS = [
 def log_info(message: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {message}", flush=True)
+
+
+def _normalize_city_key(value: str) -> str:
+    s = str(value or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z\s-]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def normalize_city_name(value: str) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    if is_generic_hq(s):
+        return ""
+    key = _normalize_city_key(s)
+    if not key:
+        return ""
+    if key in CITY_ALIAS_TO_EN:
+        return CITY_ALIAS_TO_EN[key]
+    # Fuzzy recovery for common typos (e.g., Milnao -> Milano/Milan).
+    close = difflib.get_close_matches(key, CITY_ALIAS_TO_EN.keys(), n=1, cutoff=0.75)
+    if close:
+        return CITY_ALIAS_TO_EN[close[0]]
+    # Fallback: title case cleaned token.
+    return re.sub(r"\s+", " ", s).strip(" .,-").title()
 
 
 def run_osascript(script: str) -> str:
@@ -779,15 +840,19 @@ def db_read_company_hq_map(db_path: str, database_url: str = "") -> Dict[str, st
         conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     try:
-        cur.execute('SELECT "Company", "HQ" FROM rounds WHERE "Company" IS NOT NULL AND "HQ" IS NOT NULL')
-        for company, hq in cur.fetchall():
+        cur.execute('SELECT id, "Company", "HQ" FROM rounds WHERE "Company" IS NOT NULL AND "HQ" IS NOT NULL')
+        stats: Dict[str, Dict[str, Tuple[int, int]]] = {}
+        for rid, company, hq in cur.fetchall():
             c = str(company or "").strip().lower()
-            h = str(hq or "").strip()
+            h = normalize_city_name(hq)
             if not c or not h:
                 continue
-            if h.lower() == "italy":
-                continue
-            out[c] = h
+            stats.setdefault(c, {})
+            cnt, last_id = stats[c].get(h, (0, -1))
+            stats[c][h] = (cnt + 1, max(last_id, int(rid or 0)))
+        for c, cities in stats.items():
+            chosen = sorted(cities.items(), key=lambda kv: (kv[1][0], kv[1][1]), reverse=True)[0][0]
+            out[c] = chosen
     finally:
         cur.close()
         conn.close()
@@ -893,7 +958,7 @@ def db_read_hq_overrides(db_path: str, database_url: str = "") -> Dict[str, str]
         cur.execute('SELECT "Company", "HQ" FROM hq_overrides WHERE "Company" IS NOT NULL AND "HQ" IS NOT NULL')
         for company, hq in cur.fetchall():
             c = str(company or "").strip().lower()
-            h = str(hq or "").strip()
+            h = normalize_city_name(hq)
             if not c or not h:
                 continue
             out[c] = h
@@ -921,13 +986,16 @@ def db_upsert_hq_overrides(db_path: str, database_url: str, overrides: Dict[str,
                 """
             )
             for company, city in overrides.items():
+                city_norm = normalize_city_name(city)
+                if not city_norm:
+                    continue
                 cur.execute(
                     """
                     INSERT INTO public.hq_overrides ("Company", "HQ")
                     VALUES (%s, %s)
                     ON CONFLICT ("Company") DO UPDATE SET "HQ" = EXCLUDED."HQ"
                     """,
-                    (company, city),
+                    (company, city_norm),
                 )
             conn.commit()
         finally:
@@ -947,13 +1015,16 @@ def db_upsert_hq_overrides(db_path: str, database_url: str, overrides: Dict[str,
             """
         )
         for company, city in overrides.items():
+            city_norm = normalize_city_name(city)
+            if not city_norm:
+                continue
             cur.execute(
                 """
                 INSERT INTO hq_overrides ("Company", "HQ")
                 VALUES (?, ?)
                 ON CONFLICT("Company") DO UPDATE SET "HQ" = excluded."HQ"
                 """,
-                (company, city),
+                (company, city_norm),
             )
         conn.commit()
     finally:
@@ -1231,17 +1302,17 @@ def resolve_hq(
 ) -> str:
     cur = str(current_hq or "").strip()
     if cur and not is_generic_hq(cur):
-        return cur
+        return normalize_city_name(cur) or cur
     key = str(company or "").strip().lower()
     if key and key in hq_overrides and hq_overrides[key]:
-        return hq_overrides[key]
+        return normalize_city_name(hq_overrides[key]) or hq_overrides[key]
     if key and key in hq_cache and hq_cache[key]:
-        return hq_cache[key]
+        return normalize_city_name(hq_cache[key]) or hq_cache[key]
     if key and key in db_hq_map and db_hq_map[key]:
-        return db_hq_map[key]
+        return normalize_city_name(db_hq_map[key]) or db_hq_map[key]
     inferred = infer_hq_from_bullet(bullet)
     if inferred:
-        return inferred
+        return normalize_city_name(inferred) or inferred
     return "Italy"
 
 
@@ -1313,6 +1384,7 @@ def openai_enrich_hq_overrides(
                 continue
             company = str(item.get("company", "")).strip()
             city = re.sub(r"\s+", " ", str(item.get("city", "")).strip()).strip(" .,-")
+            city = normalize_city_name(city)
             if not company or not city or is_generic_hq(city):
                 continue
             out[company] = city
