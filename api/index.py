@@ -69,6 +69,9 @@ ITALIAN_CITY_EN = {
     "Bologna", "Bergamo", "Parma", "Pisa", "Modena", "Trento", "Trieste", "Brescia",
     "Verona", "Vicenza", "Poggibonsi", "Bovisio",
 }
+SECTOR_OVERRIDES = {
+    "bending spoons": "Enterprise Tech",
+}
 
 
 @app.after_request
@@ -254,6 +257,39 @@ def build_company_hq_map(cur) -> dict:
     return out
 
 
+def build_company_sector_map(cur) -> dict:
+    cur.execute(
+        """
+        WITH ranked AS (
+          SELECT
+            LOWER("Company") AS company_key,
+            "Sector 1" AS sector,
+            COUNT(*) AS cnt,
+            MAX(id) AS last_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY LOWER("Company")
+              ORDER BY COUNT(*) DESC, MAX(id) DESC
+            ) AS rn
+          FROM rounds
+          WHERE COALESCE("Company", '') <> ''
+            AND COALESCE("Sector 1", '') <> ''
+          GROUP BY LOWER("Company"), "Sector 1"
+        )
+        SELECT company_key, sector
+        FROM ranked
+        WHERE rn = 1
+        """
+    )
+    out = {}
+    for company_key, sector in cur.fetchall():
+        ck = str(company_key or "").strip().lower()
+        sv = str(sector or "").strip()
+        if ck and sv:
+            out[ck] = sv
+    out.update(SECTOR_OVERRIDES)
+    return out
+
+
 def apply_canonical_hq(rows: list, company_hq_map: dict) -> list:
     for r in rows:
         company = str(r.get("Company", "")).strip().lower()
@@ -262,6 +298,14 @@ def apply_canonical_hq(rows: list, company_hq_map: dict) -> list:
             r["HQ"] = company_hq_map[company]
         else:
             r["HQ"] = current
+    return rows
+
+
+def apply_canonical_sector(rows: list, company_sector_map: dict) -> list:
+    for r in rows:
+        company = str(r.get("Company", "")).strip().lower()
+        if company and company in company_sector_map:
+            r["Sector 1"] = company_sector_map[company]
     return rows
 
 
@@ -633,6 +677,7 @@ def rounds():
     cols = get_rounds_columns(cur)
 
     company_hq_map = build_company_hq_map(cur)
+    company_sector_map = build_company_sector_map(cur)
 
     if search:
         placeholder = ph()
@@ -653,6 +698,7 @@ def rounds():
 
     data = [dict(zip(col_names, row)) for row in rows]
     data = apply_canonical_hq(data, company_hq_map)
+    data = apply_canonical_sector(data, company_sector_map)
     return jsonify({"rows": data, "columns": col_names})
 
 
@@ -662,6 +708,7 @@ def stats():
     conn = db_conn()
     cur = conn.cursor()
     company_hq_map = build_company_hq_map(cur)
+    company_sector_map = build_company_sector_map(cur)
     cur.execute('SELECT "Company","HQ","Sector 1","Date","Round size (€M)" FROM rounds')
     rows = cur.fetchall()
     cur.close()
@@ -679,10 +726,13 @@ def stats():
             year_totals[year] = year_totals.get(year, 0.0) + amount
             year_counts[year] = year_counts.get(year, 0) + 1
 
-        sector_key = str(sector or "").strip() or "Altro"
+        company_key = str(company or "").strip().lower()
+        if company_key and company_key in company_sector_map:
+            sector_key = company_sector_map[company_key]
+        else:
+            sector_key = str(sector or "").strip() or "Altro"
         sector_totals[sector_key] = sector_totals.get(sector_key, 0.0) + amount
 
-        company_key = str(company or "").strip().lower()
         city = ""
         if company_key and company_key in company_hq_map:
             city = company_hq_map[company_key]
@@ -784,9 +834,11 @@ def rounds_query():
     rows = cur.fetchall()
     col_names = [description[0] for description in cur.description]
     company_hq_map = build_company_hq_map(cur)
+    company_sector_map = build_company_sector_map(cur)
     conn.close()
     data = [dict(zip(col_names, row)) for row in rows]
     data = apply_canonical_hq(data, company_hq_map)
+    data = apply_canonical_sector(data, company_sector_map)
     return jsonify({"rows": data, "columns": col_names})
 
 
