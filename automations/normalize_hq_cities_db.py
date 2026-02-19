@@ -50,8 +50,6 @@ CITY_ALIAS_TO_EN = {
     "poggibonsi": "Poggibonsi",
     "bovisio": "Bovisio",
 }
-
-
 def is_generic_hq(value: str) -> bool:
     v = str(value or "").strip().lower()
     return v in ("", "italy", "italia", "<city>", "city", "unknown", "n/a", "na", "nd")
@@ -70,15 +68,34 @@ def normalize_city_name(value: str) -> str:
     s = str(value or "").strip()
     if not s or is_generic_hq(s):
         return ""
-    key = _normalize_city_key(s)
-    if not key:
+    s = re.sub(r"\([^)]*\)", " ", s)
+    parts = [p.strip() for p in re.split(r"\s*/\s*|\s*-\s*|\s*\|\s*|,\s*", s) if p.strip()]
+    if not parts:
+        parts = [s]
+    normalized_parts = []
+    for p in parts:
+        key = _normalize_city_key(p)
+        if not key:
+            continue
+        if key in CITY_ALIAS_TO_EN:
+            normalized_parts.append(CITY_ALIAS_TO_EN[key])
+            continue
+        close = difflib.get_close_matches(key, CITY_ALIAS_TO_EN.keys(), n=1, cutoff=0.75)
+        if close:
+            normalized_parts.append(CITY_ALIAS_TO_EN[close[0]])
+            continue
+        normalized_parts.append(re.sub(r"\s+", " ", p).strip(" .,-").title())
+    if not normalized_parts:
         return ""
-    if key in CITY_ALIAS_TO_EN:
-        return CITY_ALIAS_TO_EN[key]
-    close = difflib.get_close_matches(key, CITY_ALIAS_TO_EN.keys(), n=1, cutoff=0.75)
-    if close:
-        return CITY_ALIAS_TO_EN[close[0]]
-    return re.sub(r"\s+", " ", s).strip(" .,-").title()
+    seen = set()
+    out = []
+    for c in normalized_parts:
+        k = c.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(c)
+    return " / ".join(out)
 
 
 def connect(db_path: str, database_url: str):

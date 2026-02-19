@@ -7,6 +7,7 @@ import subprocess
 import importlib.util
 import inspect
 import hashlib
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -27,6 +28,42 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = bool(DATABASE_URL)
 AUTOMATION_SCRIPT = str(Path(__file__).resolve().parents[1] / "automations" / "dealflowit_to_excel.py")
 EXTRACTION_MODEL = os.environ.get("OPENAI_EXTRACTION_MODEL", "gpt-5.2")
+
+CITY_ALIAS_TO_EN = {
+    "milano": "Milan",
+    "milan": "Milan",
+    "torino": "Turin",
+    "turin": "Turin",
+    "roma": "Rome",
+    "rome": "Rome",
+    "napoli": "Naples",
+    "naples": "Naples",
+    "firenze": "Florence",
+    "florence": "Florence",
+    "venezia": "Venice",
+    "venice": "Venice",
+    "genova": "Genoa",
+    "genoa": "Genoa",
+    "padova": "Padua",
+    "padua": "Padua",
+    "bologna": "Bologna",
+    "bergamo": "Bergamo",
+    "parma": "Parma",
+    "pisa": "Pisa",
+    "modena": "Modena",
+    "trento": "Trento",
+    "trieste": "Trieste",
+    "brescia": "Brescia",
+    "verona": "Verona",
+    "vicenza": "Vicenza",
+    "poggibonsi": "Poggibonsi",
+    "bovisio": "Bovisio",
+}
+ITALIAN_CITY_EN = {
+    "Milan", "Turin", "Rome", "Naples", "Florence", "Venice", "Genoa", "Padua",
+    "Bologna", "Bergamo", "Parma", "Pisa", "Modena", "Trento", "Trieste", "Brescia",
+    "Verona", "Vicenza", "Poggibonsi", "Bovisio",
+}
 
 
 @app.after_request
@@ -88,6 +125,84 @@ def parse_filter_number(value: str):
         return float(s)
     except Exception:
         return None
+
+
+def is_generic_hq(value: str) -> bool:
+    v = str(value or "").strip().lower()
+    return v in ("", "italy", "italia", "<city>", "city", "unknown", "n/a", "na", "nd")
+
+
+def _normalize_city_key(value: str) -> str:
+    s = str(value or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z\s-]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _city_from_single_token(token: str) -> str:
+    key = _normalize_city_key(token)
+    if not key:
+        return ""
+    if key in CITY_ALIAS_TO_EN:
+        return CITY_ALIAS_TO_EN[key]
+    close = difflib.get_close_matches(key, CITY_ALIAS_TO_EN.keys(), n=1, cutoff=0.75)
+    if close:
+        return CITY_ALIAS_TO_EN[close[0]]
+    cleaned = re.sub(r"\s+", " ", str(token).strip()).strip(" .,-")
+    return cleaned.title() if cleaned else ""
+
+
+def normalize_city_name(value: str) -> str:
+    s = str(value or "").strip()
+    if not s or is_generic_hq(s):
+        return ""
+    s = re.sub(r"\([^)]*\)", " ", s)
+    parts = [p.strip() for p in re.split(r"\s*/\s*|\s*-\s*|\s*\|\s*|,\s*", s) if p.strip()]
+    if not parts:
+        parts = [s]
+    normalized_parts = [c for c in (_city_from_single_token(p) for p in parts) if c]
+    if not normalized_parts:
+        return ""
+    # Keep multi-city when present, canonicalized and deduplicated.
+    seen = set()
+    out = []
+    for c in normalized_parts:
+        key = c.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return " / ".join(out)
+
+
+def build_company_hq_map(cur) -> dict:
+    cur.execute('SELECT id, "Company", "HQ" FROM rounds WHERE COALESCE("Company", \'\') <> \'\'')
+    stats = {}
+    for rid, company, hq in cur.fetchall():
+        ck = str(company or "").strip().lower()
+        city = normalize_city_name(hq)
+        if not ck or not city:
+            continue
+        stats.setdefault(ck, {})
+        cnt, last_id = stats[ck].get(city, (0, -1))
+        stats[ck][city] = (cnt + 1, max(last_id, int(rid or 0)))
+    out = {}
+    for ck, city_stats in stats.items():
+        out[ck] = sorted(city_stats.items(), key=lambda kv: (kv[1][0], kv[1][1]), reverse=True)[0][0]
+    return out
+
+
+def apply_canonical_hq(rows: list, company_hq_map: dict) -> list:
+    for r in rows:
+        company = str(r.get("Company", "")).strip().lower()
+        current = normalize_city_name(r.get("HQ", ""))
+        if company and company in company_hq_map:
+            r["HQ"] = company_hq_map[company]
+        elif current:
+            r["HQ"] = current
+    return rows
 
 
 def infer_intent_from_question(question: str) -> dict:
@@ -457,6 +572,8 @@ def rounds():
     cur = conn.cursor()
     cols = get_rounds_columns(cur)
 
+    company_hq_map = build_company_hq_map(cur)
+
     if search:
         placeholder = ph()
         like_clause = " OR ".join([f'"{c}" LIKE {placeholder}' for c in cols])
@@ -475,6 +592,7 @@ def rounds():
     conn.close()
 
     data = [dict(zip(col_names, row)) for row in rows]
+    data = apply_canonical_hq(data, company_hq_map)
     return jsonify({"rows": data, "columns": col_names})
 
 
@@ -524,6 +642,17 @@ def rounds_query():
                 if v is not None:
                     where_clauses.append(f"{amount_expr} = {placeholder}")
                     params.append(v)
+        elif col == "HQ":
+            city_norm = normalize_city_name(value)
+            if city_norm:
+                variants = {city_norm}
+                # include known aliases mapping to same canonical city
+                for k, v in CITY_ALIAS_TO_EN.items():
+                    if v == city_norm:
+                        variants.add(k.title())
+                ors = [f'LOWER("HQ") = LOWER({placeholder})' for _ in variants]
+                where_clauses.append("(" + " OR ".join(ors) + ")")
+                params.extend(list(variants))
         else:
             where_clauses.append(f'LOWER("{col}") LIKE LOWER({placeholder})')
             params.append(f"%{value}%")
@@ -533,8 +662,10 @@ def rounds_query():
     cur.execute(query, params + [limit, offset])
     rows = cur.fetchall()
     col_names = [description[0] for description in cur.description]
+    company_hq_map = build_company_hq_map(cur)
     conn.close()
     data = [dict(zip(col_names, row)) for row in rows]
+    data = apply_canonical_hq(data, company_hq_map)
     return jsonify({"rows": data, "columns": col_names})
 
 
@@ -558,6 +689,23 @@ def rounds_distinct():
         return jsonify({"status": "Error", "error": "Invalid col"}), 400
 
     try:
+        if col == "HQ":
+            cur.execute('SELECT "Company", "HQ" FROM rounds WHERE COALESCE("Company", \'\') <> \'\'')
+            stats = {}
+            for company, hq in cur.fetchall():
+                ck = str(company or "").strip().lower()
+                city = normalize_city_name(hq)
+                if not ck or not city:
+                    continue
+                stats.setdefault(ck, {})
+                stats[ck][city] = stats[ck].get(city, 0) + 1
+            canon = []
+            for _, city_stats in stats.items():
+                canon.append(sorted(city_stats.items(), key=lambda kv: kv[1], reverse=True)[0][0])
+            values = sorted(set(canon))
+            cur.close()
+            conn.close()
+            return jsonify({"column": col, "values": values})
         cur.execute(f'SELECT DISTINCT "{col}" FROM rounds')
         values = [row[0] for row in cur.fetchall() if row[0] not in (None, "")]
         cur.close()
