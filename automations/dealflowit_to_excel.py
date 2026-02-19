@@ -794,6 +794,82 @@ def db_read_company_hq_map(db_path: str, database_url: str = "") -> Dict[str, st
     return out
 
 
+def db_read_company_sector_map(db_path: str, database_url: str = "") -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if database_url:
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed but --database-url was provided")
+        conn = psycopg.connect(database_url)
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                WITH ranked AS (
+                  SELECT
+                    LOWER("Company") AS company_key,
+                    "Sector 1" AS sector,
+                    COUNT(*) AS cnt,
+                    MAX(id) AS last_id,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY LOWER("Company")
+                      ORDER BY COUNT(*) DESC, MAX(id) DESC
+                    ) AS rn
+                  FROM rounds
+                  WHERE COALESCE("Company", '') <> ''
+                    AND COALESCE("Sector 1", '') <> ''
+                  GROUP BY LOWER("Company"), "Sector 1"
+                )
+                SELECT company_key, sector
+                FROM ranked
+                WHERE rn = 1
+                """
+            )
+            for company_key, sector in cur.fetchall():
+                c = str(company_key or "").strip()
+                s = str(sector or "").strip()
+                if c and s:
+                    out[c] = s
+        finally:
+            cur.close()
+            conn.close()
+        return out
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            WITH ranked AS (
+              SELECT
+                LOWER("Company") AS company_key,
+                "Sector 1" AS sector,
+                COUNT(*) AS cnt,
+                MAX(id) AS last_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY LOWER("Company")
+                  ORDER BY COUNT(*) DESC, MAX(id) DESC
+                ) AS rn
+              FROM rounds
+              WHERE COALESCE("Company", '') <> ''
+                AND COALESCE("Sector 1", '') <> ''
+              GROUP BY LOWER("Company"), "Sector 1"
+            )
+            SELECT company_key, sector
+            FROM ranked
+            WHERE rn = 1
+            """
+        )
+        for company_key, sector in cur.fetchall():
+            c = str(company_key or "").strip()
+            s = str(sector or "").strip()
+            if c and s:
+                out[c] = s
+    finally:
+        cur.close()
+        conn.close()
+    return out
+
+
 def db_read_hq_overrides(db_path: str, database_url: str = "") -> Dict[str, str]:
     out: Dict[str, str] = {}
     if database_url:
@@ -1410,6 +1486,7 @@ def main():
         headers = db_read_headers(db_path, database_url)
         hq_overrides = db_read_hq_overrides(db_path, database_url)
         db_hq_map = db_read_company_hq_map(db_path, database_url)
+        db_sector_map = db_read_company_sector_map(db_path, database_url)
     else:
         log_info("Opening workbook")
         wb = load_workbook(args.path)
@@ -1420,6 +1497,7 @@ def main():
         headers = read_headers(ws, header_row)
         hq_overrides = {}
         db_hq_map = {}
+        db_sector_map = {}
 
     hq_cache = load_hq_cache(args.hq_cache)
     log_info(f"HQ cache loaded entries: {len(hq_cache)}")
@@ -1452,6 +1530,9 @@ def main():
             sector = normalize_sector(row.get("Sector 1", ""))
             if not sector:
                 sector = infer_sector_from_bullet(str(row.get("Company", "")), bullets)
+            company_key = str(row.get("Company", "")).strip().lower()
+            if company_key and company_key in db_sector_map:
+                sector = db_sector_map[company_key]
             row["Sector 1"] = sector
         # Format Round size (€M) with comma decimal
         if "Round size (€M)" in row:
@@ -1492,6 +1573,12 @@ def main():
     if fallback_rows:
         log_info(f"Synthesized {len(fallback_rows)} fallback rows for missing companies")
         rows.extend(fallback_rows)
+
+    # Final consistency pass: keep the canonical sector already used by the same company.
+    for row in rows:
+        company_key = str(row.get("Company", "")).strip().lower()
+        if company_key and company_key in db_sector_map:
+            row["Sector 1"] = db_sector_map[company_key]
 
     if db_mode:
         inserted, inserted_companies = db_insert_rows(
