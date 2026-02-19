@@ -125,6 +125,17 @@ def infer_intent_from_question(question: str) -> dict:
         intent["group_by"] = "company"
         intent["top_n"] = 1
 
+    if (
+        any(k in ql for k in ["top", "classifica", "ranking"])
+        and any(k in ql for k in ["azienda", "aziende", "societ", "company", "companies"])
+        and any(k in ql for k in ["raccolto", "raised", "funding"])
+    ):
+        intent["subject"] = "amount"
+        intent["metric"] = "sum"
+        intent["group_by"] = "company"
+        if intent.get("top_n") is None:
+            intent["top_n"] = 5
+
     if any(k in ql for k in ["per settore", "per settori", "by sector", "sectors"]) or ("settor" in ql):
         intent["group_by"] = "sector"
     elif any(k in ql for k in ["per citta", "per città", "by city", "cities"]):
@@ -224,6 +235,16 @@ def normalize_intent(intent: dict, question: str) -> dict:
         filters.setdefault(k, v)
 
     return {"metric": metric, "subject": subject, "group_by": group_by, "top_n": top_n, "filters": filters}
+
+
+def order_by_nulls_last(column: str, descending: bool = True) -> str:
+    # PostgreSQL supports NULLS LAST directly.
+    if USE_POSTGRES:
+        return f"ORDER BY {column} {'DESC' if descending else 'ASC'} NULLS LAST"
+    # SQLite-compatible fallback.
+    if descending:
+        return f"ORDER BY ({column} IS NULL), {column} DESC"
+    return f"ORDER BY ({column} IS NULL), {column} ASC"
 
 
 def get_rounds_columns(cur):
@@ -551,6 +572,10 @@ def rounds_distinct():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
+    # In Vercel production we expect Supabase/Postgres as source of truth.
+    if os.environ.get("VERCEL") and not USE_POSTGRES:
+        return jsonify({"status": "Error", "error": "DATABASE_URL missing: chat is not connected to Supabase."}), 500
+
     ensure_db()
     payload = request.get_json(force=True)
     question = payload.get("question", "").strip()
@@ -690,7 +715,11 @@ def chat():
     elif subject == "rounds" and metric == "count":
         if group_by in group_map:
             group_col = group_map[group_by]
-            sql = f'SELECT {group_col} AS group_key, COUNT(*) AS round_count FROM rounds {where_sql} GROUP BY {group_col} ORDER BY round_count DESC LIMIT {top_n or 20}'
+            sql = (
+                f'SELECT {group_col} AS group_key, COUNT(*) AS round_count '
+                f'FROM rounds {where_sql} GROUP BY {group_col} '
+                f'{order_by_nulls_last("round_count", descending=True)} LIMIT {top_n or 20}'
+            )
         else:
             sql = f'SELECT COUNT(*) AS round_count FROM rounds {where_sql}'
     elif subject == "amount":
@@ -698,9 +727,15 @@ def chat():
         agg = agg_map.get(metric, "SUM")
         if group_by in group_map:
             group_col = group_map[group_by]
-            sql = f'SELECT {group_col} AS group_key, {agg}({amount_expr}) AS total_raised FROM rounds {where_sql} GROUP BY {group_col} ORDER BY total_raised DESC LIMIT {top_n or 20}'
+            order_desc = metric != "min"
+            sql = (
+                f'SELECT {group_col} AS group_key, {agg}({amount_expr}) AS total_raised '
+                f'FROM rounds {where_sql} GROUP BY {group_col} '
+                f'HAVING {agg}({amount_expr}) IS NOT NULL '
+                f'{order_by_nulls_last("total_raised", descending=order_desc)} LIMIT {top_n or 20}'
+            )
         else:
-            sql = f'SELECT {agg}({amount_expr}) AS total_raised FROM rounds {where_sql}'
+            sql = f'SELECT {agg}({amount_expr}) AS total_raised FROM rounds {where_sql} WHERE {amount_expr} IS NOT NULL' if not where_sql else f'SELECT {agg}({amount_expr}) AS total_raised FROM rounds {where_sql} AND {amount_expr} IS NOT NULL'
     else:
         sql = f'SELECT * FROM rounds {where_sql} ORDER BY id DESC LIMIT 200'
 
@@ -725,14 +760,14 @@ def chat():
     if "total_raised" in col_names and "group_key" in col_names and rows:
         items = []
         for r in rows[:5]:
-            if not r or r[0] in (None, ""):
+            if not r or r[0] in (None, "") or r[1] is None:
                 continue
             try:
                 amt = float(r[1])
                 items.append(f"{r[0]} ({amt:.2f}M)")
             except Exception:
                 items.append(f"{r[0]} ({r[1]}M)")
-        return jsonify({"status": "Success", "answer": ("Top: " + ", ".join(items)) if items else "Nessun risultato."})
+        return jsonify({"status": "Success", "answer": ("Top: " + ", ".join(items)) if items else "Nessun risultato con importo disponibile."})
     if "total_raised" in col_names:
         val = rows[0][0] if rows else 0
         try:
