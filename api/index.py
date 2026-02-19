@@ -95,7 +95,10 @@ def infer_intent_from_question(question: str) -> dict:
     ql = q.lower()
     intent = {"metric": "count", "subject": "rounds", "group_by": None, "top_n": None, "filters": {}}
 
-    if any(k in ql for k in ["how many companies", "quante societ", "numero di societ", "number of companies"]):
+    if any(k in ql for k in ["how many rounds", "quanti round", "numero di round", "number of rounds"]):
+        intent["subject"] = "rounds"
+        intent["metric"] = "count"
+    elif any(k in ql for k in ["how many companies", "quante societ", "numero di societ", "number of companies"]):
         intent["subject"] = "companies"
         intent["metric"] = "count"
     elif any(k in ql for k in ["totale raccolto", "total raised", "quanto raccolto", "somma raccolta", "raccolto"]):
@@ -110,6 +113,17 @@ def infer_intent_from_question(question: str) -> dict:
     elif any(k in ql for k in ["minimo", "min", "smallest"]):
         intent["subject"] = "amount"
         intent["metric"] = "min"
+
+    # Questions like "chi ha raccolto di più nel 2026?"
+    if (
+        any(k in ql for k in ["chi ", "who "])
+        and any(k in ql for k in ["raccolto", "raised"])
+        and any(k in ql for k in ["di più", "di piu", "most", "più", "piu"])
+    ):
+        intent["subject"] = "amount"
+        intent["metric"] = "sum"
+        intent["group_by"] = "company"
+        intent["top_n"] = 1
 
     if any(k in ql for k in ["per settore", "per settori", "by sector", "sectors"]) or ("settor" in ql):
         intent["group_by"] = "sector"
@@ -136,6 +150,22 @@ def infer_intent_from_question(question: str) -> dict:
         m_year = re.search(r"\b(20\d{2})\b", ql)
         if m_year:
             intent["filters"]["year_eq"] = m_year.group(1)
+
+    m_between = re.search(r"\b(?:tra|between)\s*(20\d{2})\s*(?:e|and)\s*(20\d{2})\b", ql)
+    if m_between:
+        intent["filters"]["year_from"] = int(m_between.group(1))
+        intent["filters"]["year_to"] = int(m_between.group(2))
+        intent["filters"].pop("year_eq", None)
+
+    m_from_today = re.search(r"\b(?:dal|da|from|since)\s*(20\d{2}).*(?:ad oggi|oggi|to date|today)\b", ql)
+    if m_from_today:
+        intent["filters"]["year_from"] = int(m_from_today.group(1))
+        intent["filters"].pop("year_eq", None)
+
+    m_from = re.search(r"\b(?:dal|da|from|since)\s*(20\d{2})\b", ql)
+    if m_from and "year_from" not in intent["filters"]:
+        intent["filters"]["year_from"] = int(m_from.group(1))
+        intent["filters"].pop("year_eq", None)
 
     m_min = re.search(
         r"\b(?:minimo|almeno|at least|over|oltre|above|greater than)\s*€?\s*([0-9]+(?:[.,][0-9]+)?)\s*([mk])?\b",
@@ -591,6 +621,20 @@ def chat():
     filters["sector"] = map_entity(filters.get("sector"), sectors)
     filters["city"] = map_entity(filters.get("city"), cities)
     filters["lead"] = map_entity(filters.get("lead"), leads)
+    if not filters.get("company") and companies:
+        q_norm = normalize_text(question)
+        best = None
+        for c in companies:
+            c_text = str(c or "").strip()
+            if not c_text:
+                continue
+            c_norm = normalize_text(c_text)
+            if len(c_norm) < 3:
+                continue
+            if c_norm in q_norm:
+                if best is None or len(c_norm) > len(best):
+                    best = c_norm
+                    filters["company"] = c_text
     if filters.get("min_amount") is not None:
         filters["min_amount"] = parse_filter_number(filters.get("min_amount"))
 
