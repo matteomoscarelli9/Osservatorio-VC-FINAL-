@@ -244,8 +244,8 @@ body {
 }
 
 .db-table table {
-  width: 100%;
-  min-width: 1780px;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -256,6 +256,20 @@ body {
   text-align: left;
   white-space: nowrap;
 }
+
+/* Keep first visible block stable up to Co-lead / follow 1 */
+.db-table th:nth-child(1), .db-table td:nth-child(1) { min-width: 52px; }
+.db-table th:nth-child(2), .db-table td:nth-child(2) { min-width: 150px; }
+.db-table th:nth-child(3), .db-table td:nth-child(3) { min-width: 145px; }
+.db-table th:nth-child(4), .db-table td:nth-child(4) { min-width: 92px; }
+.db-table th:nth-child(5), .db-table td:nth-child(5) { min-width: 108px; }
+.db-table th:nth-child(6), .db-table td:nth-child(6) { min-width: 86px; }
+.db-table th:nth-child(7), .db-table td:nth-child(7) { min-width: 72px; }
+.db-table th:nth-child(8), .db-table td:nth-child(8) { min-width: 188px; }
+.db-table th:nth-child(9), .db-table td:nth-child(9) { min-width: 188px; }
+
+/* Force extra horizontal space for follow columns (visible only on scroll) */
+.db-table th:nth-child(n+10), .db-table td:nth-child(n+10) { min-width: 146px; }
 
 .db-table th {
   position: sticky;
