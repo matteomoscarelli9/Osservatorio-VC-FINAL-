@@ -238,6 +238,8 @@ body {
 
 .db-table {
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
   border-radius: 16px;
   border: 1px solid rgba(9, 11, 20, 0.08);
   background: rgba(255, 255, 255, 0.7);
@@ -292,6 +294,7 @@ body {
 .pager {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 14px;
 }
@@ -521,21 +524,44 @@ body {
 }
 
 @media (max-width: 980px) {
-  .hero { flex-direction: column; }
-  .hero-side { align-items: flex-start; }
+  .app { padding: 34px 16px 34px; }
+  .hero { flex-direction: column; gap: 20px; padding: 24px 20px; border-radius: 18px; }
+  .hero-side { align-items: flex-start; width: 100%; }
+  .uv-logo { width: 150px; }
+  .db { padding: 18px; border-radius: 18px; }
+  .db-head { flex-direction: column; gap: 14px; }
+  .db-actions { width: 100%; flex-wrap: wrap; }
+  .search { flex: 1; min-width: 0; }
+  .search input { min-width: 0; width: 100%; }
   .insights { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
-  .app { padding: 32px 18px 40px; }
-  .footer { flex-direction: column; gap: 8px; }
-  .db-head { flex-direction: column; }
-  .db-actions { width: 100%; flex-direction: column; align-items: stretch; }
-  .run-btn { width: 100%; }
-  .search { width: 100%; }
-  .search input { flex: 1; min-width: 0; }
+  .app { padding: 24px 12px 30px; }
+  .badge { font-size: 11px; letter-spacing: 0.12em; }
+  .hero h1 { font-size: clamp(26px, 8vw, 34px); }
+  .hero p { font-size: 14px; }
+  .db-actions { align-items: stretch; }
+  .run-btn { width: 100%; min-height: 42px; }
+  .search { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+  .search input { min-width: 0; }
+  .search button { white-space: nowrap; }
+  .db-table { border-radius: 12px; }
+  .db-table table { width: 1180px; min-width: 1180px; font-size: 12px; }
+  .db-table th, .db-table td { padding: 9px 10px; }
+  .db-table .filter { font-size: 11px; padding: 6px 7px; }
+  .chat { padding: 14px; }
   .chat-form { flex-direction: column; }
+  .chat button { width: 100%; }
+  .insight-card { padding: 16px; border-radius: 14px; }
   .bar-row { grid-template-columns: 70px 1fr 60px; }
   .pie-wrap { grid-template-columns: 1fr; }
   .pie { margin: 0 auto; }
+  .footer { justify-content: flex-start; }
+}
+
+@media (max-width: 420px) {
+  .db-table table { width: 1080px; min-width: 1080px; }
+  .lang-toggle { width: 100%; justify-content: space-between; }
+  .lang { flex: 1; text-align: center; }
 }
