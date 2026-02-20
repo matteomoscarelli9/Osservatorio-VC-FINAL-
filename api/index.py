@@ -72,6 +72,16 @@ ITALIAN_CITY_EN = {
 SECTOR_OVERRIDES = {
     "bending spoons": "Enterprise Tech",
 }
+INVESTOR_ALIASES = {
+    "cdp": "CDP Venture Capital",
+    "cdpvc": "CDP Venture Capital",
+    "cdp vc": "CDP Venture Capital",
+    "cdpventurecapital": "CDP Venture Capital",
+    "cdp venture capital": "CDP Venture Capital",
+    "cdp venture capital sgr": "CDP Venture Capital",
+    "cdpventurecapitalsgr": "CDP Venture Capital",
+}
+INVESTOR_COLS = ["Lead", "Co-lead / follow 1", "follow 2", "follow 3", "follow 4", "Debt"]
 
 
 @app.after_request
@@ -133,6 +143,38 @@ def parse_filter_number(value: str):
         return float(s)
     except Exception:
         return None
+
+
+def _normalize_investor_key(value: str) -> str:
+    s = str(value or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s
+
+
+def normalize_investor_name(value: str) -> str:
+    s = re.sub(r"\s+", " ", str(value or "").strip())
+    if not s:
+        return ""
+    parts = [p.strip() for p in re.split(r"\s*/\s*|\s*;\s*|\s*,\s*", s) if p.strip()]
+    if not parts:
+        parts = [s]
+    out = []
+    seen = set()
+    for p in parts:
+        key = _normalize_investor_key(p)
+        if not key:
+            continue
+        canon = INVESTOR_ALIASES.get(key, re.sub(r"\s+", " ", p).strip(" .,-"))
+        if not canon:
+            continue
+        lk = canon.lower()
+        if lk in seen:
+            continue
+        seen.add(lk)
+        out.append(canon)
+    return " / ".join(out)
 
 
 def parse_amount_value(value) -> float:
@@ -306,6 +348,14 @@ def apply_canonical_sector(rows: list, company_sector_map: dict) -> list:
         company = str(r.get("Company", "")).strip().lower()
         if company and company in company_sector_map:
             r["Sector 1"] = company_sector_map[company]
+    return rows
+
+
+def apply_canonical_investors(rows: list) -> list:
+    for r in rows:
+        for col in INVESTOR_COLS:
+            if col in r:
+                r[col] = normalize_investor_name(r.get(col, ""))
     return rows
 
 
@@ -701,6 +751,7 @@ def rounds():
     data = [dict(zip(col_names, row)) for row in rows]
     data = apply_canonical_hq(data, company_hq_map)
     data = apply_canonical_sector(data, company_sector_map)
+    data = apply_canonical_investors(data)
     return jsonify({"rows": data, "columns": col_names})
 
 
@@ -841,6 +892,7 @@ def rounds_query():
     data = [dict(zip(col_names, row)) for row in rows]
     data = apply_canonical_hq(data, company_hq_map)
     data = apply_canonical_sector(data, company_sector_map)
+    data = apply_canonical_investors(data)
     return jsonify({"rows": data, "columns": col_names})
 
 
@@ -872,6 +924,8 @@ def rounds_distinct():
             return jsonify({"column": col, "values": values})
         cur.execute(f'SELECT DISTINCT "{col}" FROM rounds')
         values = [row[0] for row in cur.fetchall() if row[0] not in (None, "")]
+        if col in INVESTOR_COLS:
+            values = sorted({normalize_investor_name(v) for v in values if normalize_investor_name(v)})
         cur.close()
         conn.close()
         return jsonify({"column": col, "values": values})
@@ -911,6 +965,7 @@ def chat():
     sectors = distinct("Sector 1")
     cities = distinct("HQ")
     leads = distinct("Lead")
+    leads = sorted({normalize_investor_name(v) for v in leads if normalize_investor_name(v)})
 
     def normalize_text(val: str) -> str:
         return re.sub(r"[^a-z0-9\\s]", " ", val.lower()).strip()

@@ -72,6 +72,17 @@ CITY_ALIAS_TO_EN = {
     "l acquila": "L'Aquila",
     "berlino": "Berlin",
 }
+INVESTOR_ALIASES = {
+    "cdp": "CDP Venture Capital",
+    "cdp vc": "CDP Venture Capital",
+    "cdpventurecapital": "CDP Venture Capital",
+    "cdp venture capital": "CDP Venture Capital",
+    "cdp venture capital sgr": "CDP Venture Capital",
+    "cdp venturecapital": "CDP Venture Capital",
+    "cdpvc": "CDP Venture Capital",
+    "cdpventurecapitalsgr": "CDP Venture Capital",
+}
+INVESTOR_COLS = ["Lead", "Co-lead / follow 1", "follow 2", "follow 3", "follow 4", "Debt"]
 
 ALLOWED_SECTORS = [
     "Agritech",
@@ -122,6 +133,38 @@ def _normalize_city_key(value: str) -> str:
     s = re.sub(r"[^a-z\s-]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+
+def _normalize_investor_key(value: str) -> str:
+    s = str(value or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s
+
+
+def normalize_investor_name(value: str) -> str:
+    s = re.sub(r"\s+", " ", str(value or "").strip())
+    if not s:
+        return ""
+    parts = [p.strip() for p in re.split(r"\s*/\s*|\s*;\s*|\s*,\s*", s) if p.strip()]
+    if not parts:
+        parts = [s]
+    out = []
+    seen = set()
+    for p in parts:
+        key = _normalize_investor_key(p)
+        if not key:
+            continue
+        canon = INVESTOR_ALIASES.get(key, re.sub(r"\s+", " ", p).strip(" .,-"))
+        if not canon:
+            continue
+        lk = canon.lower()
+        if lk in seen:
+            continue
+        seen.add(lk)
+        out.append(canon)
+    return " / ".join(out)
 
 
 def _is_non_city_token(token: str) -> bool:
@@ -1652,6 +1695,9 @@ def main():
         company = str(row.get("Company", "")).strip()
         related_bullet = find_company_bullet(company, bullets)
         row["HQ"] = resolve_hq(company, row.get("HQ", ""), related_bullet, hq_overrides, hq_cache, db_hq_map)
+        for col in INVESTOR_COLS:
+            if col in row:
+                row[col] = normalize_investor_name(row.get(col, ""))
 
     # Auto-enrich HQ city for unresolved companies and persist into hq_overrides.
     inferred_overrides = openai_enrich_hq_overrides(rows, bullets, args.hq_model)
@@ -1690,6 +1736,9 @@ def main():
         company_key = str(row.get("Company", "")).strip().lower()
         if company_key and company_key in db_sector_map:
             row["Sector 1"] = db_sector_map[company_key]
+        for col in INVESTOR_COLS:
+            if col in row:
+                row[col] = normalize_investor_name(row.get(col, ""))
 
     if db_mode:
         inserted, inserted_companies = db_insert_rows(
