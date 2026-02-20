@@ -186,9 +186,22 @@ body {
   border: none;
   border-radius: 10px;
   padding: 10px 14px;
-  font-weight: 700;
+  font-weight: 600;
+  font-size: inherit;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   min-width: 110px;
+  text-decoration: none;
+}
+
+.run-btn:visited,
+.run-btn:hover,
+.run-btn:active {
+  color: #fff;
+  text-decoration: none;
 }
 
 .run-btn:disabled {
