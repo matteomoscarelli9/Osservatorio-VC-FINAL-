@@ -85,7 +85,7 @@ export default function App() {
     footer: "Crafted by Matteo Moscarelli"
   };
 
-  const hiddenCols = new Set(["Female founder", "Spin-off?", "FX", "Tag"]);
+  const hiddenCols = new Set(["id", "Female founder", "Spin-off?", "FX", "Tag"]);
   const roundSizeBuckets = [
     { label: "<€1M", value: "lt:1" },
     { label: "from €1M to €3M", value: "between:1:3" },
