@@ -565,7 +565,9 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        <div>{t.footer}</div>
+        <a href="https://www.linkedin.com/in/matteo-moscarelli/" target="_blank" rel="noreferrer">
+          {t.footer}
+        </a>
       </footer>
     </div>
   );
