@@ -266,7 +266,7 @@ body {
 .db-table th:nth-child(3), .db-table td:nth-child(3) { width: 95px; }   /* HQ */
 .db-table th:nth-child(4), .db-table td:nth-child(4) { width: 92px; }   /* Round size */
 .db-table th:nth-child(5), .db-table td:nth-child(5) { width: 86px; }   /* Date */
-.db-table th:nth-child(6), .db-table td:nth-child(6) { width: 70px; }   /* Q */
+.db-table th:nth-child(6), .db-table td:nth-child(6) { width: 96px; }   /* Q */
 .db-table th:nth-child(7), .db-table td:nth-child(7) { width: 170px; }  /* Lead */
 .db-table th:nth-child(8), .db-table td:nth-child(8) { width: 170px; }  /* Co-lead/follow1 */
 .db-table th:nth-child(9), .db-table td:nth-child(9) { width: 145px; }  /* follow2 */
