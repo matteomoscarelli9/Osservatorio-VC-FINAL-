@@ -260,18 +260,17 @@ body {
   text-overflow: ellipsis;
 }
 
-/* Visible area target: up to follow 2 */
-.db-table th:nth-child(1), .db-table td:nth-child(1) { width: 42px; }   /* id */
-.db-table th:nth-child(2), .db-table td:nth-child(2) { width: 120px; }  /* Company */
-.db-table th:nth-child(3), .db-table td:nth-child(3) { width: 130px; }  /* Sector 1 */
-.db-table th:nth-child(4), .db-table td:nth-child(4) { width: 90px; }   /* HQ */
-.db-table th:nth-child(5), .db-table td:nth-child(5) { width: 92px; }   /* Round size */
-.db-table th:nth-child(6), .db-table td:nth-child(6) { width: 72px; }   /* Date */
-.db-table th:nth-child(7), .db-table td:nth-child(7) { width: 56px; }   /* Q */
-.db-table th:nth-child(8), .db-table td:nth-child(8) { width: 170px; }  /* Lead */
-.db-table th:nth-child(9), .db-table td:nth-child(9) { width: 170px; }  /* Co-lead/follow1 */
-.db-table th:nth-child(10), .db-table td:nth-child(10) { width: 140px; } /* follow2 */
-.db-table th:nth-child(n+11), .db-table td:nth-child(n+11) { width: 140px; } /* scroll only */
+/* Visible area target (without id): up to follow 2 */
+.db-table th:nth-child(1), .db-table td:nth-child(1) { width: 190px; }  /* Company */
+.db-table th:nth-child(2), .db-table td:nth-child(2) { width: 130px; }  /* Sector 1 */
+.db-table th:nth-child(3), .db-table td:nth-child(3) { width: 95px; }   /* HQ */
+.db-table th:nth-child(4), .db-table td:nth-child(4) { width: 92px; }   /* Round size */
+.db-table th:nth-child(5), .db-table td:nth-child(5) { width: 86px; }   /* Date */
+.db-table th:nth-child(6), .db-table td:nth-child(6) { width: 70px; }   /* Q */
+.db-table th:nth-child(7), .db-table td:nth-child(7) { width: 170px; }  /* Lead */
+.db-table th:nth-child(8), .db-table td:nth-child(8) { width: 170px; }  /* Co-lead/follow1 */
+.db-table th:nth-child(9), .db-table td:nth-child(9) { width: 145px; }  /* follow2 */
+.db-table th:nth-child(n+10), .db-table td:nth-child(n+10) { width: 140px; } /* scroll only */
 
 .db-table th {
   position: sticky;
