@@ -3,7 +3,7 @@ import uvLogo from "./assets/uv-logo.png";
 
 export default function App() {
   const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-  const [lang, setLang] = useState("it");
+  const [lang, setLang] = useState("en");
   const [dbRows, setDbRows] = useState([]);
   const [dbCols, setDbCols] = useState([]);
   const [dbSearch, setDbSearch] = useState("");
