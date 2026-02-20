@@ -244,8 +244,9 @@ body {
 }
 
 .db-table table {
-  width: max-content;
-  min-width: 100%;
+  width: 1450px;
+  min-width: 1450px;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -255,21 +256,22 @@ body {
   border-bottom: 1px solid rgba(9, 11, 20, 0.06);
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* Keep first visible block stable up to Co-lead / follow 1 */
-.db-table th:nth-child(1), .db-table td:nth-child(1) { min-width: 52px; }
-.db-table th:nth-child(2), .db-table td:nth-child(2) { min-width: 150px; }
-.db-table th:nth-child(3), .db-table td:nth-child(3) { min-width: 145px; }
-.db-table th:nth-child(4), .db-table td:nth-child(4) { min-width: 92px; }
-.db-table th:nth-child(5), .db-table td:nth-child(5) { min-width: 108px; }
-.db-table th:nth-child(6), .db-table td:nth-child(6) { min-width: 86px; }
-.db-table th:nth-child(7), .db-table td:nth-child(7) { min-width: 72px; }
-.db-table th:nth-child(8), .db-table td:nth-child(8) { min-width: 188px; }
-.db-table th:nth-child(9), .db-table td:nth-child(9) { min-width: 188px; }
-
-/* Force extra horizontal space for follow columns (visible only on scroll) */
-.db-table th:nth-child(n+10), .db-table td:nth-child(n+10) { min-width: 146px; }
+/* Visible area target: up to follow 2 */
+.db-table th:nth-child(1), .db-table td:nth-child(1) { width: 42px; }   /* id */
+.db-table th:nth-child(2), .db-table td:nth-child(2) { width: 120px; }  /* Company */
+.db-table th:nth-child(3), .db-table td:nth-child(3) { width: 130px; }  /* Sector 1 */
+.db-table th:nth-child(4), .db-table td:nth-child(4) { width: 90px; }   /* HQ */
+.db-table th:nth-child(5), .db-table td:nth-child(5) { width: 92px; }   /* Round size */
+.db-table th:nth-child(6), .db-table td:nth-child(6) { width: 72px; }   /* Date */
+.db-table th:nth-child(7), .db-table td:nth-child(7) { width: 56px; }   /* Q */
+.db-table th:nth-child(8), .db-table td:nth-child(8) { width: 170px; }  /* Lead */
+.db-table th:nth-child(9), .db-table td:nth-child(9) { width: 170px; }  /* Co-lead/follow1 */
+.db-table th:nth-child(10), .db-table td:nth-child(10) { width: 140px; } /* follow2 */
+.db-table th:nth-child(n+11), .db-table td:nth-child(n+11) { width: 140px; } /* scroll only */
 
 .db-table th {
   position: sticky;
