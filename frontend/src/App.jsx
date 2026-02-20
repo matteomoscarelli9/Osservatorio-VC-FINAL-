@@ -25,7 +25,7 @@ export default function App() {
 
   const t = lang === "it" ? {
     badge: "TWIS → Osservatorio VC",
-    heroTitle: "Round italiani dal 2022 ad oggi.\nAggiornamento settimanale.",
+    heroTitle: "VC Funding Rounds in Italia\nAggiornati settimanalmente dal 2022",
     heroBody: "Ogni lunedì alle 09:10, l’automazione legge TWIS, estrae “The Money” ed aggiorna il database.",
     dbTitle: "Database rounds italiani",
     dbSubtitle: "Filtra, esplora e visualizza i dati nelle dashboard.",
@@ -55,7 +55,7 @@ export default function App() {
     footer: "Crafted by Matteo Moscarelli"
   } : {
     badge: "TWIS → VC Observatory",
-    heroTitle: "Italian rounds from 2022 to today.\nWeekly update.",
+    heroTitle: "Italian VC Funding Rounds\nUpdated weekly since 2022",
     heroBody: "Every Monday at 09:10, the automation reads TWIS, extracts “The Money” and updates the database.",
     dbTitle: "Italian rounds database",
     dbSubtitle: "Filter, explore, and visualize data in the dashboards.",
