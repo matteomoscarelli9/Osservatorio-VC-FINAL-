@@ -2,6 +2,7 @@
   color-scheme: light;
   --ink: #0b0b10;
   --muted: #4f5563;
+  --section-title-size: clamp(24px, 2.2vw, 34px);
   --card: rgba(255, 255, 255, 0.78);
   --glass: rgba(255, 255, 255, 0.48);
   --accent: #0f8a4c;
@@ -115,7 +116,7 @@ body {
 .hero-subtitle {
   margin: 0 0 12px;
   font-family: "Sora", sans-serif;
-  font-size: clamp(22px, 2.2vw, 32px);
+  font-size: var(--section-title-size);
   font-weight: 700;
   line-height: 1.15;
   letter-spacing: -0.01em;
@@ -124,7 +125,7 @@ body {
 
 .hero p {
   margin: 0;
-  font-size: clamp(13px, 1.7vw, 18px);
+  font-size: clamp(12px, 1.35vw, 16px);
   font-weight: 400;
   color: var(--muted);
   max-width: 560px;
@@ -180,6 +181,7 @@ body {
 
 .db-head h2 {
   font-family: "Sora", sans-serif;
+  font-size: var(--section-title-size);
   margin: 0 0 6px;
 }
 
