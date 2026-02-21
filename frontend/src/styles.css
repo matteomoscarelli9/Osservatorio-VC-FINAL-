@@ -105,7 +105,7 @@ body {
 
 .hero h1 {
   font-family: "Sora", sans-serif;
-  font-size: clamp(42px, 5.2vw, 62px);
+  font-size: clamp(36px, 4.6vw, 54px);
   font-weight: 700;
   line-height: 1.03;
   letter-spacing: -0.022em;
@@ -115,7 +115,7 @@ body {
 .hero-subtitle {
   margin: 0 0 10px;
   font-family: "Sora", sans-serif;
-  font-size: clamp(24px, 2.8vw, 34px);
+  font-size: clamp(25px, 3vw, 36px);
   font-weight: 700;
   line-height: 1.12;
   letter-spacing: -0.012em;
@@ -180,7 +180,7 @@ body {
 
 .db-head h2 {
   font-family: "Sora", sans-serif;
-  font-size: clamp(26px, 2.1vw, 32px);
+  font-size: clamp(23px, 1.9vw, 28px);
   margin: 0 0 6px;
   line-height: 1.1;
   letter-spacing: -0.012em;
