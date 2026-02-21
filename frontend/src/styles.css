@@ -109,6 +109,13 @@ body {
   margin: 14px 0 12px;
 }
 
+.hero-subtitle {
+  margin: 0 0 10px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #0b3f24;
+}
+
 .hero p {
   margin: 0;
   font-size: 16px;

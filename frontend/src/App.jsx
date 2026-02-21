@@ -25,7 +25,8 @@ export default function App() {
 
   const t = lang === "it" ? {
     badge: "TWIS → Osservatorio VC",
-    heroTitle: "VC Funding Rounds in Italia\nAggiornati settimanalmente dal 2022",
+    heroTitle: "VC Funding Rounds in Italia",
+    heroSubtitle: "Aggiornati settimanalmente dal 2022",
     heroBody: "Ogni lunedì alle 09:10, l’automazione legge TWIS, estrae “The Money” ed aggiorna il database.",
     dbTitle: "Database rounds italiani",
     dbSubtitle: "Filtra, esplora e visualizza i dati nelle dashboard.",
@@ -55,7 +56,8 @@ export default function App() {
     footer: "Crafted by Matteo Moscarelli"
   } : {
     badge: "TWIS → VC Observatory",
-    heroTitle: "Italian VC Funding Rounds\nUpdated weekly since 2022",
+    heroTitle: "Italian VC Funding Rounds",
+    heroSubtitle: "Updated weekly since 2022",
     heroBody: "Every Monday at 09:10, the automation reads TWIS, extracts “The Money” and updates the database.",
     dbTitle: "Italian rounds database",
     dbSubtitle: "Filter, explore, and visualize data in the dashboards.",
@@ -268,10 +270,9 @@ export default function App() {
         <div>
           <span className="badge">{t.badge}</span>
           <h1>
-            {t.heroTitle.split("\n")[0]}
-            <br />
-            {t.heroTitle.split("\n")[1]}
+            {t.heroTitle}
           </h1>
+          <p className="hero-subtitle">{t.heroSubtitle}</p>
           <p>
             {t.heroBody.split("TWIS")[0]}
             <a className="link" href="https://dealflowit.niccolosanarico.com/" target="_blank" rel="noreferrer">
