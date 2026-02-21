@@ -106,22 +106,28 @@ body {
 .hero h1 {
   font-family: "Sora", sans-serif;
   font-size: clamp(32px, 4vw, 44px);
-  margin: 14px 0 12px;
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+  margin: 14px 0 8px;
 }
 
 .hero-subtitle {
-  margin: 0 0 10px;
-  font-size: 18px;
+  margin: 0 0 12px;
+  font-size: clamp(20px, 2.6vw, 28px);
   font-weight: 600;
+  line-height: 1.18;
+  letter-spacing: -0.008em;
   color: #0b3f24;
 }
 
 .hero p {
   margin: 0;
-  font-size: 16px;
+  font-size: clamp(13px, 1.7vw, 18px);
+  font-weight: 400;
   color: var(--muted);
   max-width: 560px;
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 .link {
