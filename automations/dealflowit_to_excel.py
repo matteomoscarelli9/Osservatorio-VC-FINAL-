@@ -1144,6 +1144,24 @@ def db_is_duplicate_with_amount(conn, company: str, date_val: str, amount_val: s
     return out
 
 
+def db_find_duplicate_row(conn, company: str, date_val: str, amount_val: str, pg_mode: bool = False):
+    if not company or not date_val:
+        return None
+    p = "%s" if pg_mode else "?"
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f'SELECT id, "HQ", COALESCE("Round size (€M)", \'\') FROM rounds '
+            f'WHERE LOWER("Company") = LOWER({p}) AND LOWER("Date") = LOWER({p}) '
+            f'AND REPLACE(COALESCE("Round size (€M)", \'\'), \',\', \'.\') = REPLACE(COALESCE({p}, \'\'), \',\', \'.\') '
+            f'ORDER BY id DESC LIMIT 1',
+            (str(company).strip(), str(date_val).strip(), str(amount_val).strip()),
+        )
+        return cur.fetchone()
+    finally:
+        cur.close()
+
+
 def db_insert_rows(
     db_path: str,
     headers: List[str],
@@ -1175,7 +1193,23 @@ def db_insert_rows(
             company = row.get(dedup_company, "")
             date_val = row.get(dedup_date, "")
             amount_val = row.get("Round size (€M)", "")
-            if db_is_duplicate_with_amount(conn, company, date_val, amount_val, pg_mode):
+            dup = db_find_duplicate_row(conn, company, date_val, amount_val, pg_mode)
+            if dup is not None:
+                # Heal existing duplicate row if HQ was generic or amount used comma format.
+                rid, existing_hq, existing_amount = dup
+                updates = []
+                params = []
+                new_hq = str(row.get("HQ", "")).strip()
+                if is_generic_hq(existing_hq) and new_hq and not is_generic_hq(new_hq):
+                    updates.append(f'"HQ" = {"%s" if pg_mode else "?"}')
+                    params.append(new_hq)
+                normalized_amount = format_decimal_dot(amount_val)
+                if normalized_amount and str(existing_amount or "").strip() != normalized_amount:
+                    updates.append(f'"Round size (€M)" = {"%s" if pg_mode else "?"}')
+                    params.append(normalized_amount)
+                if updates:
+                    params.append(rid)
+                    cur.execute(f'UPDATE rounds SET {", ".join(updates)} WHERE id = {"%s" if pg_mode else "?"}', params)
                 continue
             values = [row.get(h, "") for h in insertable_headers]
             cur.execute(insert_sql, values)
@@ -1269,18 +1303,18 @@ def infer_sector_from_bullet(company: str, bullets: List[str]) -> str:
     return ""
 
 
-def format_decimal_comma(value: str) -> str:
+def format_decimal_dot(value: str) -> str:
     if value is None:
         return ""
     s = str(value).strip()
     if not s:
         return ""
-    # If already uses comma or is not numeric-like, return as-is
-    if "," in s:
-        return s
-    # Accept numbers like 1.23 or 1 or 1.0
+    s = s.replace(",", ".")
+    s = re.sub(r"[^0-9.\-]", "", s)
+    if not s:
+        return ""
     if re.fullmatch(r"\d+(\.\d+)?", s):
-        return s.replace(".", ",")
+        return s
     return s
 
 
@@ -1319,10 +1353,10 @@ def extract_amount_from_bullet(bullet: str) -> str:
         if unit == "k":
             n = n / 1000.0
         out = f"{n:.3f}".rstrip("0").rstrip(".")
-        return out.replace(".", ",")
+        return out
     m = re.search(r"€\s*([0-9]+(?:\.[0-9]+)?)", txt)
     if m:
-        return m.group(1).replace(".", ",")
+        return m.group(1)
     return ""
 
 
@@ -1395,7 +1429,7 @@ def resolve_hq(
     inferred = infer_hq_from_bullet(bullet)
     if inferred:
         return normalize_city_name(inferred) or inferred
-    return "Italy"
+    return ""
 
 
 def openai_enrich_hq_overrides(
@@ -1432,7 +1466,7 @@ def openai_enrich_hq_overrides(
         "Return JSON array only, one item per input item, preserving order. "
         'Each item keys: "company", "city". '
         "City must be a concrete city name only (no country, no placeholders). "
-        "If uncertain, return empty city."
+        "If uncertain, provide the best-supported city estimate from available sources."
     )
     user = {"items": unresolved}
 
@@ -1688,9 +1722,9 @@ def main():
             if company_key and company_key in db_sector_map:
                 sector = db_sector_map[company_key]
             row["Sector 1"] = sector
-        # Format Round size (€M) with comma decimal
+        # Format Round size (€M) with dot decimal
         if "Round size (€M)" in row:
-            row["Round size (€M)"] = format_decimal_comma(row.get("Round size (€M)", ""))
+            row["Round size (€M)"] = format_decimal_dot(row.get("Round size (€M)", ""))
         # Fill HQ with priority: extracted value -> cache -> DB-known city -> bullet inference.
         company = str(row.get("Company", "")).strip()
         related_bullet = find_company_bullet(company, bullets)
@@ -1698,18 +1732,6 @@ def main():
         for col in INVESTOR_COLS:
             if col in row:
                 row[col] = normalize_investor_name(row.get(col, ""))
-
-    # Auto-enrich HQ city for unresolved companies and persist into hq_overrides.
-    inferred_overrides = openai_enrich_hq_overrides(rows, bullets, args.hq_model)
-    if inferred_overrides:
-        log_info(f"Auto-enriched HQ city for {len(inferred_overrides)} companies")
-        for row in rows:
-            company = str(row.get("Company", "")).strip()
-            if company in inferred_overrides:
-                row["HQ"] = inferred_overrides[company]
-        hq_overrides.update({k.strip().lower(): v for k, v in inferred_overrides.items()})
-        if db_mode:
-            db_upsert_hq_overrides(db_path, database_url, inferred_overrides)
 
     # Guardrail: skip malformed extracted rows (event-like noise without round size)
     rows = [
@@ -1731,11 +1753,28 @@ def main():
         log_info(f"Synthesized {len(fallback_rows)} fallback rows for missing companies")
         rows.extend(fallback_rows)
 
+    # Auto-enrich HQ city for unresolved companies (run after fallback rows too)
+    inferred_overrides = openai_enrich_hq_overrides(rows, bullets, args.hq_model)
+    if inferred_overrides:
+        log_info(f"Auto-enriched HQ city for {len(inferred_overrides)} companies")
+        for row in rows:
+            company = str(row.get("Company", "")).strip()
+            if company in inferred_overrides:
+                row["HQ"] = inferred_overrides[company]
+        hq_overrides.update({k.strip().lower(): v for k, v in inferred_overrides.items()})
+        if db_mode:
+            db_upsert_hq_overrides(db_path, database_url, inferred_overrides)
+
     # Final consistency pass: keep the canonical sector already used by the same company.
     for row in rows:
         company_key = str(row.get("Company", "")).strip().lower()
         if company_key and company_key in db_sector_map:
             row["Sector 1"] = db_sector_map[company_key]
+        if "Round size (€M)" in row:
+            row["Round size (€M)"] = format_decimal_dot(row.get("Round size (€M)", ""))
+        company = str(row.get("Company", "")).strip()
+        if is_generic_hq(row.get("HQ", "")):
+            row["HQ"] = resolve_hq(company, row.get("HQ", ""), find_company_bullet(company, bullets), hq_overrides, hq_cache, db_hq_map)
         for col in INVESTOR_COLS:
             if col in row:
                 row[col] = normalize_investor_name(row.get(col, ""))
