@@ -115,6 +115,7 @@ ALLOWED_SECTORS = [
     "Mobility",
     "Quantum",
     "Social Network",
+    "Space Tech",
     "Silver Economy",
     "Travel & Hospitality",
     "Web3",
@@ -124,6 +125,9 @@ SECTOR_ALIAS_TO_CANONICAL = {
     "biotech": "Life Sciences",
     "bio tech": "Life Sciences",
     "life sciences": "Life Sciences",
+    "space tech": "Space Tech",
+    "space-tech": "Space Tech",
+    "spacetech": "Space Tech",
 }
 
 
@@ -1355,6 +1359,9 @@ def normalize_sector(value: str) -> str:
         "edtech": "Edtech",
         "web 3": "Web3",
         "social network": "Social Network",
+        "space tech": "Space Tech",
+        "space-tech": "Space Tech",
+        "spacetech": "Space Tech",
     }
     if val in variants:
         return variants[val]

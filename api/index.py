@@ -341,6 +341,8 @@ def canonicalize_sector(value: str) -> str:
     k = s.lower()
     if k in {"biotech", "bio tech", "bio-tech"}:
         return "Life Sciences"
+    if k in {"space tech", "space-tech", "spacetech"}:
+        return "Space Tech"
     return s
 
 

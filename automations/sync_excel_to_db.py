@@ -46,6 +46,7 @@ CANONICAL_SECTORS = [
     "Mobility",
     "Quantum",
     "Social Network",
+    "Space Tech",
     "Silver Economy",
     "Travel & Hospitality",
     "Web3",
@@ -127,6 +128,8 @@ def normalize_sector(value: str) -> str:
     key = raw.lower()
     if key in {"biotech", "bio tech", "bio-tech"}:
         return "Life Sciences"
+    if key in {"space tech", "space-tech", "spacetech"}:
+        return "Space Tech"
     if key in _SECTOR_LOOKUP:
         v = _SECTOR_LOOKUP[key]
         return "Life Sciences" if v == "Biotech" else v
