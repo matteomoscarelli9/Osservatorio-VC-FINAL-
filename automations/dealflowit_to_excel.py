@@ -120,6 +120,12 @@ ALLOWED_SECTORS = [
     "Web3",
 ]
 
+SECTOR_ALIAS_TO_CANONICAL = {
+    "biotech": "Life Sciences",
+    "bio tech": "Life Sciences",
+    "life sciences": "Life Sciences",
+}
+
 
 def log_info(message: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -980,7 +986,8 @@ def db_read_company_sector_map(db_path: str, database_url: str = "") -> Dict[str
             )
             for company_key, sector in cur.fetchall():
                 c = str(company_key or "").strip()
-                s = str(sector or "").strip()
+                s_raw = str(sector or "").strip()
+                s = normalize_sector(s_raw) or s_raw
                 if c and s:
                     out[c] = s
         finally:
@@ -1015,7 +1022,8 @@ def db_read_company_sector_map(db_path: str, database_url: str = "") -> Dict[str
         )
         for company_key, sector in cur.fetchall():
             c = str(company_key or "").strip()
-            s = str(sector or "").strip()
+            s_raw = str(sector or "").strip()
+            s = normalize_sector(s_raw) or s_raw
             if c and s:
                 out[c] = s
     finally:
@@ -1330,6 +1338,8 @@ def normalize_sector(value: str) -> str:
         "clean tech": "Cleantech",
         "cleantech": "Cleantech",
         "climate tech": "Climate Tech",
+        "biotech": "Life Sciences",
+        "bio tech": "Life Sciences",
         "cyber security": "Cybersecurity",
         "cybersecurity": "Cybersecurity",
         "e-commerce": "eCommerce",
@@ -1348,8 +1358,12 @@ def normalize_sector(value: str) -> str:
     }
     if val in variants:
         return variants[val]
+    if val in SECTOR_ALIAS_TO_CANONICAL:
+        return SECTOR_ALIAS_TO_CANONICAL[val]
     for s in ALLOWED_SECTORS:
         if s.lower() == val:
+            if s == "Biotech":
+                return "Life Sciences"
             return s
     return ""
 

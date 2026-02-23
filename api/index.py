@@ -327,11 +327,21 @@ def build_company_sector_map(cur) -> dict:
     out = {}
     for company_key, sector in cur.fetchall():
         ck = str(company_key or "").strip().lower()
-        sv = str(sector or "").strip()
+        sv = canonicalize_sector(str(sector or "").strip())
         if ck and sv:
             out[ck] = sv
     out.update(SECTOR_OVERRIDES)
     return out
+
+
+def canonicalize_sector(value: str) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    k = s.lower()
+    if k in {"biotech", "bio tech", "bio-tech"}:
+        return "Life Sciences"
+    return s
 
 
 def apply_canonical_hq(rows: list, company_hq_map: dict) -> list:
@@ -350,6 +360,8 @@ def apply_canonical_sector(rows: list, company_sector_map: dict) -> list:
         company = str(r.get("Company", "")).strip().lower()
         if company and company in company_sector_map:
             r["Sector 1"] = company_sector_map[company]
+        else:
+            r["Sector 1"] = canonicalize_sector(r.get("Sector 1", ""))
     return rows
 
 
@@ -977,6 +989,8 @@ def rounds_distinct():
             return jsonify({"column": col, "values": values})
         cur.execute(f'SELECT DISTINCT "{col}" FROM rounds')
         values = [row[0] for row in cur.fetchall() if row[0] not in (None, "")]
+        if col == "Sector 1":
+            values = sorted({canonicalize_sector(v) for v in values if canonicalize_sector(v)})
         if col in INVESTOR_COLS:
             values = sorted({normalize_investor_name(v) for v in values if normalize_investor_name(v)})
         cur.close()
@@ -1015,7 +1029,7 @@ def chat():
         return [r[0] for r in cur.fetchall() if r[0]]
 
     companies = distinct("Company")
-    sectors = distinct("Sector 1")
+    sectors = sorted({canonicalize_sector(v) for v in distinct("Sector 1") if canonicalize_sector(v)})
     cities = distinct("HQ")
     leads = distinct("Lead")
     leads = sorted({normalize_investor_name(v) for v in leads if normalize_investor_name(v)})

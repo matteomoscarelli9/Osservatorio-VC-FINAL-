@@ -125,17 +125,22 @@ def normalize_sector(value: str) -> str:
     if not raw:
         return ""
     key = raw.lower()
+    if key in {"biotech", "bio tech", "bio-tech"}:
+        return "Life Sciences"
     if key in _SECTOR_LOOKUP:
-        return _SECTOR_LOOKUP[key]
+        v = _SECTOR_LOOKUP[key]
+        return "Life Sciences" if v == "Biotech" else v
     # Normalize common punctuation/spacing
     key = key.replace("-", " ").replace("_", " ").replace("&", "and")
     key = " ".join(key.split())
     if key in _SECTOR_LOOKUP:
-        return _SECTOR_LOOKUP[key]
+        v = _SECTOR_LOOKUP[key]
+        return "Life Sciences" if v == "Biotech" else v
     # Fuzzy match to closest canonical sector
     candidates = difflib.get_close_matches(key, _SECTOR_LOOKUP.keys(), n=1, cutoff=0.85)
     if candidates:
-        return _SECTOR_LOOKUP[candidates[0]]
+        v = _SECTOR_LOOKUP[candidates[0]]
+        return "Life Sciences" if v == "Biotech" else v
     return raw
 
 

@@ -18,6 +18,15 @@ DEFAULT_OVERRIDES = {
     "bending spoons": "Enterprise Tech",
 }
 
+def canonicalize_sector(value: str) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    k = s.lower()
+    if k in {"biotech", "bio tech", "bio-tech"}:
+        return "Life Sciences"
+    return s
+
 
 def read_overrides(path: str) -> Dict[str, str]:
     overrides = dict(DEFAULT_OVERRIDES)
@@ -40,7 +49,7 @@ def connect(db_path: str, database_url: str):
     if database_url:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but --database-url was provided")
-        return psycopg.connect(database_url), True
+        return psycopg.connect(database_url, prepare_threshold=None), True
     return sqlite3.connect(db_path), False
 
 
@@ -72,7 +81,7 @@ def fetch_canonical_sector(conn, pg_mode: bool) -> Dict[str, str]:
         out: Dict[str, str] = {}
         for company_key, sector in cur.fetchall():
             ck = str(company_key or "").strip()
-            sv = str(sector or "").strip()
+            sv = canonicalize_sector(sector)
             if ck and sv:
                 out[ck] = sv
         return out
@@ -97,6 +106,7 @@ def apply_normalization(conn, pg_mode: bool, canonical: Dict[str, str], dry_run:
                 continue
             touched += 1
             current = str(sector or "").strip()
+            current = canonicalize_sector(current)
             if current != wanted:
                 updated += 1
                 if not dry_run:
@@ -120,6 +130,7 @@ def main():
     try:
         canonical = fetch_canonical_sector(conn, pg_mode)
         overrides = read_overrides(args.overrides_json)
+        overrides = {k: canonicalize_sector(v) for k, v in overrides.items()}
         canonical.update(overrides)
         touched, updated = apply_normalization(conn, pg_mode, canonical, args.dry_run)
     finally:
