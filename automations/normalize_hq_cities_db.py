@@ -320,10 +320,17 @@ def fill_missing_hq_with_ai(
             for item in parsed:
                 if not isinstance(item, dict):
                     continue
-                company = str(item.get("company", "")).strip().lower()
+                company_raw = str(item.get("company", "")).strip().lower()
                 city = normalize_city_name(item.get("city", ""))
-                if not company or company not in allowed or not city:
+                if not company_raw or not city:
                     continue
+                company = company_raw
+                if company not in allowed:
+                    close = difflib.get_close_matches(company, list(allowed), n=1, cutoff=0.82)
+                    if close:
+                        company = close[0]
+                    else:
+                        continue
                 updates[company] = city
         except Exception:
             continue
@@ -412,9 +419,11 @@ def main():
         if args.resolve_conflicts_ai:
             ai_updates = resolve_conflicts_with_ai(stats, canonical, args.ai_model)
             canonical.update(ai_updates)
+        missing_keys_count = 0
         if args.fill_missing_ai:
             all_companies = read_all_companies(conn)
             missing_keys = sorted([c for c in all_companies if c not in canonical])
+            missing_keys_count = len(missing_keys)
             ai_missing = fill_missing_hq_with_ai(missing_keys, args.ai_model)
             filled_missing = len(ai_missing)
             canonical.update(ai_missing)
@@ -432,6 +441,7 @@ def main():
                 "rows_considered": touched,
                 "rows_updated": updated,
                 "filled_missing_companies": filled_missing,
+                "missing_hq_companies": missing_keys_count,
             },
             ensure_ascii=False,
         )
