@@ -206,6 +206,28 @@ def read_all_companies(conn) -> List[str]:
         cur.close()
 
 
+def read_company_display_names(conn) -> Dict[str, str]:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT LOWER("Company") AS company_key, MAX("Company") AS display_name
+            FROM rounds
+            WHERE COALESCE("Company", '') <> ''
+            GROUP BY LOWER("Company")
+            """
+        )
+        out: Dict[str, str] = {}
+        for k, name in cur.fetchall():
+            ck = str(k or "").strip().lower()
+            dn = str(name or "").strip()
+            if ck and dn:
+                out[ck] = dn
+        return out
+    finally:
+        cur.close()
+
+
 def choose_canonical_city(stats: Dict[str, Dict[str, Tuple[int, int]]], overrides: Dict[str, str]) -> Dict[str, str]:
     canonical: Dict[str, str] = {}
     for company_key, cities in stats.items():
@@ -276,6 +298,7 @@ def resolve_conflicts_with_ai(
 
 def fill_missing_hq_with_ai(
     missing_company_keys: List[str],
+    display_names: Dict[str, str],
     model: str = "gpt-4.1-mini",
 ) -> Dict[str, str]:
     if not missing_company_keys:
@@ -292,14 +315,15 @@ def fill_missing_hq_with_ai(
         "(official website, LinkedIn company page). "
         "Return JSON array only with items: company, city. "
         "company must match one provided input exactly; city must be a concrete city name only. "
-        "If uncertain, return empty city."
+        "If uncertain, return your best-supported estimate."
     )
 
     updates: Dict[str, str] = {}
     chunk_size = 40
     for i in range(0, len(missing_company_keys), chunk_size):
         chunk = missing_company_keys[i:i + chunk_size]
-        user = {"companies": chunk}
+        chunk_items = [{"company_key": k, "company": display_names.get(k, k)} for k in chunk]
+        user = {"companies": chunk_items}
         try:
             payload = {
                 "model": model,
@@ -330,7 +354,17 @@ def fill_missing_hq_with_ai(
                     if close:
                         company = close[0]
                     else:
-                        continue
+                        # Try matching by provided display names.
+                        rev = {v.lower(): k for k, v in display_names.items()}
+                        if company in rev and rev[company] in allowed:
+                            company = rev[company]
+                        else:
+                            # Last chance fuzzy match against display names
+                            dn_close = difflib.get_close_matches(company, list(rev.keys()), n=1, cutoff=0.82)
+                            if dn_close and rev[dn_close[0]] in allowed:
+                                company = rev[dn_close[0]]
+                            else:
+                                continue
                 updates[company] = city
         except Exception:
             continue
@@ -422,9 +456,10 @@ def main():
         missing_keys_count = 0
         if args.fill_missing_ai:
             all_companies = read_all_companies(conn)
+            display_names = read_company_display_names(conn)
             missing_keys = sorted([c for c in all_companies if c not in canonical])
             missing_keys_count = len(missing_keys)
-            ai_missing = fill_missing_hq_with_ai(missing_keys, args.ai_model)
+            ai_missing = fill_missing_hq_with_ai(missing_keys, display_names, args.ai_model)
             filled_missing = len(ai_missing)
             canonical.update(ai_missing)
         touched, updated = apply_rounds_updates(conn, pg_mode, canonical, args.dry_run)
