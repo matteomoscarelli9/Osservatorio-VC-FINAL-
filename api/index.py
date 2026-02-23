@@ -27,6 +27,7 @@ DB_PATH = os.environ.get("DB_PATH", DEFAULT_DB_PATH)
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = bool(DATABASE_URL)
 AUTOMATION_SCRIPT = str(Path(__file__).resolve().parents[1] / "automations" / "dealflowit_to_excel.py")
+HQ_NORMALIZER_SCRIPT = str(Path(__file__).resolve().parents[1] / "automations" / "normalize_hq_cities_db.py")
 EXTRACTION_MODEL = os.environ.get("OPENAI_EXTRACTION_MODEL", "gpt-5.2")
 
 CITY_ALIAS_TO_EN = {
@@ -628,6 +629,45 @@ def _run_automation(payload: dict):
             except Exception:
                 pass
 
+    hq_normalization = {"status": "Skipped", "reason": "not_run"}
+    if os.path.exists(HQ_NORMALIZER_SCRIPT):
+        norm_cmd = [
+            "python3",
+            HQ_NORMALIZER_SCRIPT,
+            "--resolve-conflicts-ai",
+            "--fill-missing-ai",
+            "--ai-model",
+            hq_model or "gpt-4.1-mini",
+        ]
+        if USE_POSTGRES:
+            norm_cmd.extend(["--database-url", DATABASE_URL])
+        else:
+            norm_cmd.extend(["--db", DB_PATH])
+        norm_proc = subprocess.run(norm_cmd, capture_output=True, text=True, env=os.environ.copy())
+        norm_stdout = (norm_proc.stdout or "").strip()
+        norm_stderr = (norm_proc.stderr or "").strip()
+        if norm_stdout:
+            print(f"[hq-normalizer stdout]\n{norm_stdout}", flush=True)
+        if norm_stderr:
+            print(f"[hq-normalizer stderr]\n{norm_stderr}", flush=True)
+        if norm_proc.returncode == 0:
+            parsed = None
+            for line in reversed(norm_stdout.splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    break
+                except Exception:
+                    continue
+            hq_normalization = parsed or {"status": "Success"}
+        else:
+            hq_normalization = {
+                "status": "Error",
+                "error": (norm_stderr or norm_stdout or "HQ normalization failed"),
+            }
+
     return jsonify(
         {
             "status": "Success",
@@ -636,6 +676,7 @@ def _run_automation(payload: dict):
             "normalized_amount_rows": normalized_amount_rows,
             "normalized_hq_rows": normalized_hq_rows,
             "companies": companies,
+            "hq_normalization": hq_normalization,
             "model": EXTRACTION_MODEL,
             "time": datetime.now().strftime("%d %b %Y · %H:%M"),
         }

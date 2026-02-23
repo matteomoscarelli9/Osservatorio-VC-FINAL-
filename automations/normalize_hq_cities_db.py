@@ -6,7 +6,7 @@ import re
 import sqlite3
 import difflib
 import unicodedata
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 try:
     import psycopg
@@ -154,6 +154,30 @@ def ensure_overrides_table(conn, pg_mode: bool):
         cur.close()
 
 
+def read_existing_overrides(conn, pg_mode: bool) -> Dict[str, str]:
+    cur = conn.cursor()
+    out: Dict[str, str] = {}
+    try:
+        if pg_mode:
+            cur.execute("SELECT to_regclass('public.hq_overrides')")
+            exists = cur.fetchone()[0] is not None
+        else:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='hq_overrides'")
+            exists = cur.fetchone() is not None
+        if not exists:
+            return out
+        table_name = "public.hq_overrides" if pg_mode else "hq_overrides"
+        cur.execute(f'SELECT "Company", "HQ" FROM {table_name}')
+        for company, hq in cur.fetchall():
+            ck = str(company or "").strip().lower()
+            cv = normalize_city_name(hq)
+            if ck and cv:
+                out[ck] = cv
+        return out
+    finally:
+        cur.close()
+
+
 def read_company_city_stats(conn) -> Dict[str, Dict[str, Tuple[int, int]]]:
     cur = conn.cursor()
     try:
@@ -168,6 +192,15 @@ def read_company_city_stats(conn) -> Dict[str, Dict[str, Tuple[int, int]]]:
             cnt, last_id = stats[ck].get(city, (0, -1))
             stats[ck][city] = (cnt + 1, max(last_id, int(rid or 0)))
         return stats
+    finally:
+        cur.close()
+
+
+def read_all_companies(conn) -> List[str]:
+    cur = conn.cursor()
+    try:
+        cur.execute('SELECT DISTINCT LOWER("Company") FROM rounds WHERE COALESCE("Company", \'\') <> \'\'')
+        return [str(r[0]).strip().lower() for r in cur.fetchall() if str(r[0] or "").strip()]
     finally:
         cur.close()
 
@@ -240,6 +273,62 @@ def resolve_conflicts_with_ai(
         return {}
 
 
+def fill_missing_hq_with_ai(
+    missing_company_keys: List[str],
+    model: str = "gpt-4.1-mini",
+) -> Dict[str, str]:
+    if not missing_company_keys:
+        return {}
+    if OpenAI is None:
+        return {}
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return {}
+
+    client = OpenAI(api_key=api_key)
+    system = (
+        "Find the headquarters city for each company from reliable sources "
+        "(official website, LinkedIn company page). "
+        "Return JSON array only with items: company, city. "
+        "company must match one provided input exactly; city must be a concrete city name only. "
+        "If uncertain, return empty city."
+    )
+
+    updates: Dict[str, str] = {}
+    chunk_size = 40
+    for i in range(0, len(missing_company_keys), chunk_size):
+        chunk = missing_company_keys[i:i + chunk_size]
+        user = {"companies": chunk}
+        try:
+            payload = {
+                "model": model,
+                "input": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                ],
+            }
+            try:
+                resp = client.responses.create(**payload, tools=[{"type": "web_search_preview"}])
+            except Exception:
+                resp = client.responses.create(**payload)
+            text = resp.output_text if hasattr(resp, "output_text") else ""
+            parsed = json.loads(text) if text else []
+            if not isinstance(parsed, list):
+                continue
+            allowed = set(chunk)
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                company = str(item.get("company", "")).strip().lower()
+                city = normalize_city_name(item.get("city", ""))
+                if not company or company not in allowed or not city:
+                    continue
+                updates[company] = city
+        except Exception:
+            continue
+    return updates
+
+
 def apply_rounds_updates(conn, pg_mode: bool, canonical: Dict[str, str], dry_run: bool):
     p = "%s" if pg_mode else "?"
     cur = conn.cursor()
@@ -295,6 +384,7 @@ def main():
     parser.add_argument("--database-url", default="", help="Postgres connection URL")
     parser.add_argument("--overrides-json", default="", help="Optional JSON company->city overrides (English city names)")
     parser.add_argument("--resolve-conflicts-ai", action="store_true", help="Use OpenAI+web search to resolve multi-city company conflicts")
+    parser.add_argument("--fill-missing-ai", action="store_true", help="Use OpenAI+web search to fill missing/generic HQ companies")
     parser.add_argument("--ai-model", default="gpt-4.1-mini", help="OpenAI model for conflict resolution")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -313,18 +403,38 @@ def main():
     conn, pg_mode = connect(args.db, args.database_url.strip())
     try:
         ensure_overrides_table(conn, pg_mode)
+        db_overrides = read_existing_overrides(conn, pg_mode)
+        overrides = {**db_overrides, **overrides}
         stats = read_company_city_stats(conn)
         canonical = choose_canonical_city(stats, overrides)
+        filled_missing = 0
         if args.resolve_conflicts_ai:
             ai_updates = resolve_conflicts_with_ai(stats, canonical, args.ai_model)
             canonical.update(ai_updates)
+        if args.fill_missing_ai:
+            all_companies = read_all_companies(conn)
+            missing_keys = sorted([c for c in all_companies if c not in canonical])
+            ai_missing = fill_missing_hq_with_ai(missing_keys, args.ai_model)
+            filled_missing = len(ai_missing)
+            canonical.update(ai_missing)
         touched, updated = apply_rounds_updates(conn, pg_mode, canonical, args.dry_run)
         upsert_overrides(conn, pg_mode, canonical, args.dry_run)
     finally:
         conn.close()
 
     mode = "DRY RUN" if args.dry_run else "APPLIED"
-    print(json.dumps({"status": mode, "companies": len(canonical), "rows_considered": touched, "rows_updated": updated}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "status": mode,
+                "companies": len(canonical),
+                "rows_considered": touched,
+                "rows_updated": updated,
+                "filled_missing_companies": filled_missing,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":
