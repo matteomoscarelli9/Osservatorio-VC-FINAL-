@@ -297,71 +297,135 @@ def resolve_conflicts_with_ai(
 
 
 def _parse_city_payload(text: str) -> str:
-    text = str(text or "").strip()
-    if not text:
-        return ""
-    # First try strict JSON object/list parsing.
+    city, _country = _parse_city_country_payload(text)
+    return city
+
+
+def _extract_json_candidate(text: str):
+    s = str(text or "").strip()
+    if not s:
+        return None
     try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return normalize_city_name(parsed.get("city", ""))
-        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-            return normalize_city_name(parsed[0].get("city", ""))
+        return json.loads(s)
     except Exception:
         pass
-    # Fallback: free-text -> first line.
-    line = text.splitlines()[0].strip(" .,-:;")
-    return normalize_city_name(line)
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", s, flags=re.IGNORECASE)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except Exception:
+            pass
+    # First object
+    m = re.search(r"\{[\s\S]*\}", s)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    # First array
+    m = re.search(r"\[[\s\S]*\]", s)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    return None
+
+
+def _parse_city_country_payload(text: str) -> tuple[str, str]:
+    parsed = _extract_json_candidate(text)
+    city = ""
+    country = ""
+    if isinstance(parsed, dict):
+        city = normalize_city_name(parsed.get("city", ""))
+        country = str(parsed.get("country", "") or "").strip()
+    elif isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+        city = normalize_city_name(parsed[0].get("city", ""))
+        country = str(parsed[0].get("country", "") or "").strip()
+    else:
+        # Fallback: free-text -> first line only for city.
+        s = str(text or "").strip()
+        if s:
+            city = normalize_city_name(s.splitlines()[0].strip(" .,-:;"))
+    return city, country
+
+
+def _is_italy_country(country: str) -> bool:
+    k = _normalize_city_key(country)
+    return k in {"italy", "italia", "italian republic", "repubblica italiana"}
 
 
 def fill_missing_hq_with_ai(
     missing_company_keys: List[str],
     display_names: Dict[str, str],
     model: str = "gpt-4.1-mini",
-) -> tuple[Dict[str, str], int, int]:
+) -> tuple[Dict[str, str], int, int, int, int]:
     if not missing_company_keys:
-        return {}, 0, 0
+        return {}, 0, 0, 0, 0
     if OpenAI is None:
-        return {}, 0, 0
+        return {}, 0, 0, 0, 0
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        return {}, 0, 0
+        return {}, 0, 0, 0, 0
 
     client = OpenAI(api_key=api_key)
     updates: Dict[str, str] = {}
     attempted = 0
     errors = 0
+    non_italy_rejected = 0
+    retry_success_count = 0
     for key in missing_company_keys:
         company_name = display_names.get(key, key)
         attempted += 1
-        try:
-            system = (
-                "Find the most likely headquarters city for the given company. "
-                "Use reliable public sources (official website, LinkedIn company page). "
-                "Return JSON object only with key 'city'. "
-                "City must be concrete (no country/region). "
-                "If uncertain, still return the best-supported city estimate."
-            )
-            user = {"company": company_name}
-            payload = {
-                "model": model,
-                "input": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
-                ],
-            }
+        accepted = False
+        for attempt_idx in (0, 1):
             try:
-                resp = client.responses.create(**payload, tools=[{"type": "web_search_preview"}])
-            except Exception:
-                resp = client.responses.create(**payload)
-            text = resp.output_text if hasattr(resp, "output_text") else ""
-            city = _parse_city_payload(text)
-            if city:
+                if attempt_idx == 0:
+                    system = (
+                        "Find the headquarters city for the given company in Italy. "
+                        "Use reliable public sources (official website, LinkedIn company page). "
+                        "Return JSON object only with keys: city, country. "
+                        "country must be 'Italy' when valid. "
+                        "If the HQ is not in Italy or you are uncertain, return city as empty string."
+                    )
+                else:
+                    system = (
+                        "Retry with strict validation. "
+                        "You must verify the company HQ city is in Italy using reliable sources "
+                        "(prefer official website and LinkedIn company page). "
+                        "Return JSON only with keys: city, country. "
+                        "If not clearly in Italy, return {\"city\":\"\",\"country\":\"\"}."
+                    )
+                user = {"company": company_name}
+                payload = {
+                    "model": model,
+                    "input": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                    ],
+                }
+                try:
+                    resp = client.responses.create(**payload, tools=[{"type": "web_search_preview"}])
+                except Exception:
+                    resp = client.responses.create(**payload)
+                text = resp.output_text if hasattr(resp, "output_text") else ""
+                city, country = _parse_city_country_payload(text)
+                if not city or is_generic_hq(city):
+                    continue
+                if country and not _is_italy_country(country):
+                    non_italy_rejected += 1
+                    continue
                 updates[key] = city
-        except Exception:
-            errors += 1
+                if attempt_idx == 1:
+                    retry_success_count += 1
+                accepted = True
+                break
+            except Exception:
+                errors += 1
+                continue
+        if not accepted:
             continue
-    return updates, attempted, errors
+    return updates, attempted, errors, non_italy_rejected, retry_success_count
 
 
 def apply_rounds_updates(conn, pg_mode: bool, canonical: Dict[str, str], dry_run: bool):
@@ -449,12 +513,16 @@ def main():
         missing_keys_count = 0
         fill_attempted = 0
         fill_errors = 0
+        non_italy_rejected = 0
+        retry_success_count = 0
         if args.fill_missing_ai:
             all_companies = read_all_companies(conn)
             display_names = read_company_display_names(conn)
             missing_keys = sorted([c for c in all_companies if c not in canonical])
             missing_keys_count = len(missing_keys)
-            ai_missing, fill_attempted, fill_errors = fill_missing_hq_with_ai(missing_keys, display_names, args.ai_model)
+            ai_missing, fill_attempted, fill_errors, non_italy_rejected, retry_success_count = fill_missing_hq_with_ai(
+                missing_keys, display_names, args.ai_model
+            )
             filled_missing = len(ai_missing)
             canonical.update(ai_missing)
         touched, updated = apply_rounds_updates(conn, pg_mode, canonical, args.dry_run)
@@ -474,6 +542,8 @@ def main():
                 "missing_hq_companies": missing_keys_count,
                 "fill_missing_attempted": fill_attempted,
                 "fill_missing_errors": fill_errors,
+                "non_italy_rejected": non_italy_rejected,
+                "retry_success_count": retry_success_count,
             },
             ensure_ascii=False,
         )

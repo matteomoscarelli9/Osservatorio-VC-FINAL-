@@ -1545,12 +1545,12 @@ def openai_enrich_hq_overrides(
 
     client = OpenAI(api_key=api_key)
     system = (
-        "Find the headquarters city for each company. "
+        "Find the headquarters city for each company in Italy only. "
         "Use web sources when needed (company website, LinkedIn, trusted profiles). "
         "Return JSON array only, one item per input item, preserving order. "
-        'Each item keys: "company", "city". '
+        'Each item keys: "company", "city", "country". '
         "City must be a concrete city name only (no country, no placeholders). "
-        "If uncertain, provide the best-supported city estimate from available sources."
+        "If HQ is not in Italy or uncertain, return empty city."
     )
     user = {"items": unresolved}
 
@@ -1585,7 +1585,10 @@ def openai_enrich_hq_overrides(
             company = str(item.get("company", "")).strip()
             city = re.sub(r"\s+", " ", str(item.get("city", "")).strip()).strip(" .,-")
             city = normalize_city_name(city)
+            country = str(item.get("country", "") or "").strip().lower()
             if not company or not city or is_generic_hq(city):
+                continue
+            if country and country not in ("italy", "italia"):
                 continue
             out[company] = city
         return out
