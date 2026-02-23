@@ -296,35 +296,53 @@ def resolve_conflicts_with_ai(
         return {}
 
 
+def _parse_city_payload(text: str) -> str:
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    # First try strict JSON object/list parsing.
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return normalize_city_name(parsed.get("city", ""))
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+            return normalize_city_name(parsed[0].get("city", ""))
+    except Exception:
+        pass
+    # Fallback: free-text -> first line.
+    line = text.splitlines()[0].strip(" .,-:;")
+    return normalize_city_name(line)
+
+
 def fill_missing_hq_with_ai(
     missing_company_keys: List[str],
     display_names: Dict[str, str],
     model: str = "gpt-4.1-mini",
-) -> Dict[str, str]:
+) -> tuple[Dict[str, str], int, int]:
     if not missing_company_keys:
-        return {}
+        return {}, 0, 0
     if OpenAI is None:
-        return {}
+        return {}, 0, 0
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        return {}
+        return {}, 0, 0
 
     client = OpenAI(api_key=api_key)
-    system = (
-        "Find the headquarters city for each company from reliable sources "
-        "(official website, LinkedIn company page). "
-        "Return JSON array only with items: company, city. "
-        "company must match one provided input exactly; city must be a concrete city name only. "
-        "If uncertain, return your best-supported estimate."
-    )
-
     updates: Dict[str, str] = {}
-    chunk_size = 40
-    for i in range(0, len(missing_company_keys), chunk_size):
-        chunk = missing_company_keys[i:i + chunk_size]
-        chunk_items = [{"company_key": k, "company": display_names.get(k, k)} for k in chunk]
-        user = {"companies": chunk_items}
+    attempted = 0
+    errors = 0
+    for key in missing_company_keys:
+        company_name = display_names.get(key, key)
+        attempted += 1
         try:
+            system = (
+                "Find the most likely headquarters city for the given company. "
+                "Use reliable public sources (official website, LinkedIn company page). "
+                "Return JSON object only with key 'city'. "
+                "City must be concrete (no country/region). "
+                "If uncertain, still return the best-supported city estimate."
+            )
+            user = {"company": company_name}
             payload = {
                 "model": model,
                 "input": [
@@ -337,38 +355,13 @@ def fill_missing_hq_with_ai(
             except Exception:
                 resp = client.responses.create(**payload)
             text = resp.output_text if hasattr(resp, "output_text") else ""
-            parsed = json.loads(text) if text else []
-            if not isinstance(parsed, list):
-                continue
-            allowed = set(chunk)
-            for item in parsed:
-                if not isinstance(item, dict):
-                    continue
-                company_raw = str(item.get("company", "")).strip().lower()
-                city = normalize_city_name(item.get("city", ""))
-                if not company_raw or not city:
-                    continue
-                company = company_raw
-                if company not in allowed:
-                    close = difflib.get_close_matches(company, list(allowed), n=1, cutoff=0.82)
-                    if close:
-                        company = close[0]
-                    else:
-                        # Try matching by provided display names.
-                        rev = {v.lower(): k for k, v in display_names.items()}
-                        if company in rev and rev[company] in allowed:
-                            company = rev[company]
-                        else:
-                            # Last chance fuzzy match against display names
-                            dn_close = difflib.get_close_matches(company, list(rev.keys()), n=1, cutoff=0.82)
-                            if dn_close and rev[dn_close[0]] in allowed:
-                                company = rev[dn_close[0]]
-                            else:
-                                continue
-                updates[company] = city
+            city = _parse_city_payload(text)
+            if city:
+                updates[key] = city
         except Exception:
+            errors += 1
             continue
-    return updates
+    return updates, attempted, errors
 
 
 def apply_rounds_updates(conn, pg_mode: bool, canonical: Dict[str, str], dry_run: bool):
@@ -454,12 +447,14 @@ def main():
             ai_updates = resolve_conflicts_with_ai(stats, canonical, args.ai_model)
             canonical.update(ai_updates)
         missing_keys_count = 0
+        fill_attempted = 0
+        fill_errors = 0
         if args.fill_missing_ai:
             all_companies = read_all_companies(conn)
             display_names = read_company_display_names(conn)
             missing_keys = sorted([c for c in all_companies if c not in canonical])
             missing_keys_count = len(missing_keys)
-            ai_missing = fill_missing_hq_with_ai(missing_keys, display_names, args.ai_model)
+            ai_missing, fill_attempted, fill_errors = fill_missing_hq_with_ai(missing_keys, display_names, args.ai_model)
             filled_missing = len(ai_missing)
             canonical.update(ai_missing)
         touched, updated = apply_rounds_updates(conn, pg_mode, canonical, args.dry_run)
@@ -477,6 +472,8 @@ def main():
                 "rows_updated": updated,
                 "filled_missing_companies": filled_missing,
                 "missing_hq_companies": missing_keys_count,
+                "fill_missing_attempted": fill_attempted,
+                "fill_missing_errors": fill_errors,
             },
             ensure_ascii=False,
         )
