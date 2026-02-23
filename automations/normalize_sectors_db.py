@@ -106,7 +106,6 @@ def apply_normalization(conn, pg_mode: bool, canonical: Dict[str, str], dry_run:
                 continue
             touched += 1
             current = str(sector or "").strip()
-            current = canonicalize_sector(current)
             if current != wanted:
                 updated += 1
                 if not dry_run:
