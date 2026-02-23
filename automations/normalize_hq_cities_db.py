@@ -355,6 +355,38 @@ def _is_italy_country(country: str) -> bool:
     return k in {"italy", "italia", "italian republic", "repubblica italiana"}
 
 
+def _verify_city_in_italy_with_ai(client, model: str, company_name: str, city: str) -> tuple[bool, str]:
+    """Return (is_italy, corrected_city). corrected_city may be empty."""
+    system = (
+        "Validate whether the provided headquarters city for the company is in Italy. "
+        "Use reliable public sources (official website, LinkedIn company page). "
+        "Return JSON object only with keys: is_italy, city. "
+        "is_italy must be true/false. city is optional corrected Italian city when is_italy is true."
+    )
+    user = {"company": company_name, "city": city}
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+        ],
+    }
+    try:
+        try:
+            resp = client.responses.create(**payload, tools=[{"type": "web_search_preview"}])
+        except Exception:
+            resp = client.responses.create(**payload)
+        text = resp.output_text if hasattr(resp, "output_text") else ""
+        parsed = _extract_json_candidate(text)
+        if not isinstance(parsed, dict):
+            return False, ""
+        is_italy = bool(parsed.get("is_italy", False))
+        corrected = normalize_city_name(parsed.get("city", ""))
+        return is_italy, corrected
+    except Exception:
+        return False, ""
+
+
 def fill_missing_hq_with_ai(
     missing_company_keys: List[str],
     display_names: Dict[str, str],
@@ -412,9 +444,18 @@ def fill_missing_hq_with_ai(
                 city, country = _parse_city_country_payload(text)
                 if not city or is_generic_hq(city):
                     continue
-                if country and not _is_italy_country(country):
-                    non_italy_rejected += 1
-                    continue
+                if country:
+                    if not _is_italy_country(country):
+                        non_italy_rejected += 1
+                        continue
+                else:
+                    # If model omitted country, explicitly validate city/company pair before accepting.
+                    is_italy, corrected = _verify_city_in_italy_with_ai(client, model, company_name, city)
+                    if not is_italy:
+                        non_italy_rejected += 1
+                        continue
+                    if corrected:
+                        city = corrected
                 updates[key] = city
                 if attempt_idx == 1:
                     retry_success_count += 1
