@@ -647,13 +647,15 @@ def monday_cron_run():
         if auth != f"Bearer {cron_secret}":
             return jsonify({"status": "Error", "error": "Unauthorized"}), 401
 
-    # Enforce exact local schedule: only run at 09:10 Europe/Rome.
+    # Enforce local schedule with a tolerance window to absorb cron jitter.
     now_rome = datetime.now(ZoneInfo("Europe/Rome"))
-    if not (now_rome.weekday() == 0 and now_rome.hour == 9 and now_rome.minute == 10):
+    in_window = now_rome.weekday() == 0 and now_rome.hour == 9 and 0 <= now_rome.minute <= 35
+    if not in_window:
         return jsonify(
             {
                 "status": "Skipped",
                 "reason": "outside_target_local_time",
+                "target_window_rome": "Monday 09:00-09:35",
                 "local_time_rome": now_rome.strftime("%Y-%m-%d %H:%M"),
             }
         )
