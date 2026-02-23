@@ -73,9 +73,19 @@ def _is_non_city_token(token: str) -> bool:
     k = _normalize_city_key(token)
     if not k:
         return True
+    if len(k) <= 2:
+        return True
     if k in {
         "italy", "italia", "us", "usa", "uk", "eu", "europe",
         "veneto", "apulia", "sud sardegna",
+    }:
+        return True
+    if k in {
+        "ag","al","an","ao","ar","ap","at","av","ba","bt","bl","bn","bg","bi","bo","bz","bs","br","ca","cl","cb",
+        "ci","ce","ct","cz","ch","co","cs","cr","kr","cn","en","fm","fe","fi","fg","fc","fr","ge","go","gr","im",
+        "is","aq","sp","lt","le","lc","li","lo","lu","mc","mn","ms","mt","me","mi","mo","mb","na","no","nu","or",
+        "pd","pa","pr","pv","pg","pu","pe","pc","pi","pt","pn","pz","po","rg","ra","rc","re","ri","rn","rm","ro",
+        "sa","ss","sv","si","sr","so","ta","te","tr","to","tp","tn","tv","ts","ud","va","ve","vb","vc","vr","vv","vi"
     }:
         return True
     bad_fragments = (
@@ -355,6 +365,11 @@ def _is_italy_country(country: str) -> bool:
     return k in {"italy", "italia", "italian republic", "repubblica italiana"}
 
 
+NON_ITALIAN_CITY_BLACKLIST = {
+    "Berlin", "Dublin", "Helsinki", "London", "Lugano", "Luxembourg", "Madrid", "New York", "Kaunas", "Kazo",
+}
+
+
 def _verify_city_in_italy_with_ai(client, model: str, company_name: str, city: str) -> tuple[bool, str]:
     """Return (is_italy, corrected_city). corrected_city may be empty."""
     system = (
@@ -385,6 +400,39 @@ def _verify_city_in_italy_with_ai(client, model: str, company_name: str, city: s
         return is_italy, corrected
     except Exception:
         return False, ""
+
+
+def _guess_italian_city_with_ai(client, model: str, company_name: str) -> str:
+    system = (
+        "Return the headquarters city in Italy for this company. "
+        "Use reliable public sources (official website and LinkedIn company page when available). "
+        "Return JSON only with keys: city, country. "
+        "country must be Italy. If uncertain, return empty city."
+    )
+    user = {"company": company_name}
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+        ],
+    }
+    try:
+        try:
+            resp = client.responses.create(**payload, tools=[{"type": "web_search_preview"}])
+        except Exception:
+            resp = client.responses.create(**payload)
+        text = resp.output_text if hasattr(resp, "output_text") else ""
+        city, country = _parse_city_country_payload(text)
+        if not city:
+            return ""
+        if country and not _is_italy_country(country):
+            return ""
+        if city in NON_ITALIAN_CITY_BLACKLIST:
+            return ""
+        return city
+    except Exception:
+        return ""
 
 
 def fill_missing_hq_with_ai(
@@ -452,10 +500,16 @@ def fill_missing_hq_with_ai(
                     # If model omitted country, explicitly validate city/company pair before accepting.
                     is_italy, corrected = _verify_city_in_italy_with_ai(client, model, company_name, city)
                     if not is_italy:
-                        non_italy_rejected += 1
-                        continue
+                        fallback_city = _guess_italian_city_with_ai(client, model, company_name)
+                        if not fallback_city:
+                            non_italy_rejected += 1
+                            continue
+                        city = fallback_city
                     if corrected:
                         city = corrected
+                if city in NON_ITALIAN_CITY_BLACKLIST:
+                    non_italy_rejected += 1
+                    continue
                 updates[key] = city
                 if attempt_idx == 1:
                     retry_success_count += 1
