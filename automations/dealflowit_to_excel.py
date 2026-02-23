@@ -126,6 +126,13 @@ def log_info(message: str) -> None:
     print(f"[{ts}] {message}", flush=True)
 
 
+def pg_connect(database_url: str):
+    if psycopg is None:
+        raise RuntimeError("psycopg is not installed but --database-url was provided")
+    # Supabase pooler (pgBouncer transaction mode) requires disabling prepared statements.
+    return psycopg.connect(database_url, prepare_threshold=None)
+
+
 def _normalize_city_key(value: str) -> str:
     s = str(value or "").strip().lower()
     s = unicodedata.normalize("NFKD", s)
@@ -888,7 +895,7 @@ def db_read_headers(db_path: str, database_url: str = "") -> List[str]:
     if database_url:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but --database-url was provided")
-        conn = psycopg.connect(database_url)
+        conn = pg_connect(database_url)
         cur = conn.cursor()
         cur.execute(
             """
@@ -917,7 +924,7 @@ def db_read_company_hq_map(db_path: str, database_url: str = "") -> Dict[str, st
     if database_url:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but --database-url was provided")
-        conn = psycopg.connect(database_url)
+        conn = pg_connect(database_url)
     else:
         conn = sqlite3.connect(db_path)
     cur = conn.cursor()
@@ -946,7 +953,7 @@ def db_read_company_sector_map(db_path: str, database_url: str = "") -> Dict[str
     if database_url:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but --database-url was provided")
-        conn = psycopg.connect(database_url)
+        conn = pg_connect(database_url)
         cur = conn.cursor()
         try:
             cur.execute(
@@ -1022,7 +1029,7 @@ def db_read_hq_overrides(db_path: str, database_url: str = "") -> Dict[str, str]
     if database_url:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but --database-url was provided")
-        conn = psycopg.connect(database_url)
+        conn = pg_connect(database_url)
         pg_mode = True
     else:
         conn = sqlite3.connect(db_path)
@@ -1056,7 +1063,7 @@ def db_upsert_hq_overrides(db_path: str, database_url: str, overrides: Dict[str,
     if database_url:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but --database-url was provided")
-        conn = psycopg.connect(database_url)
+        conn = pg_connect(database_url)
         cur = conn.cursor()
         try:
             cur.execute(
@@ -1182,7 +1189,7 @@ def db_insert_rows(
     if pg_mode:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but --database-url was provided")
-        conn = psycopg.connect(database_url)
+        conn = pg_connect(database_url)
     else:
         conn = sqlite3.connect(db_path)
     cur = conn.cursor()
@@ -1230,7 +1237,7 @@ def db_postprocess_normalization(db_path: str, database_url: str = "") -> tuple[
     if database_url:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but --database-url was provided")
-        conn = psycopg.connect(database_url)
+        conn = pg_connect(database_url)
         pg_mode = True
     else:
         conn = sqlite3.connect(db_path)

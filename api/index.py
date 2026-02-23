@@ -110,7 +110,8 @@ def db_conn():
     if USE_POSTGRES:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed but DATABASE_URL is set")
-        return psycopg.connect(DATABASE_URL)
+        # Supabase pooler (pgBouncer transaction mode) is incompatible with psycopg prepared statements.
+        return psycopg.connect(DATABASE_URL, prepare_threshold=None)
     return sqlite3.connect(DB_PATH)
 
 
