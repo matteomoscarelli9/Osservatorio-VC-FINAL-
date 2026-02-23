@@ -86,45 +86,59 @@ INVESTOR_COLS = ["Lead", "Co-lead / follow 1", "follow 2", "follow 3", "follow 4
 
 ALLOWED_SECTORS = [
     "Agritech",
-    "Biotech",
-    "Blue Economy",
     "Cleantech",
     "Climate Tech",
-    "Consulting",
     "Consumer Services",
-    "Crypto",
     "Cybersecurity",
-    "Deep Tech",
-    "DevOps",
-    "eCommerce",
+    "eCommerce & Marketplace",
     "Edtech",
     "Energy",
     "Enterprise Tech",
-    "Entraitment",
-    "Fashion",
-    "Femtech",
     "Fintech",
     "Food",
-    "Gaming",
-    "HR Tech",
     "Industrial Tech",
     "Insurtech",
     "Life Sciences",
-    "Logistics",
     "Media & Ad",
-    "Mobility",
+    "Mobility & Smart City",
+    "Proptech",
     "Quantum",
+    "Retail",
     "Social Network",
+    "Sport tech",
     "Space Tech",
-    "Silver Economy",
     "Travel & Hospitality",
-    "Web3",
+    "Web3 & Crypto",
 ]
 
 SECTOR_ALIAS_TO_CANONICAL = {
     "biotech": "Life Sciences",
     "bio tech": "Life Sciences",
+    "deep tech": "Enterprise Tech",
+    "devops": "Enterprise Tech",
+    "hr tech": "Enterprise Tech",
+    "consulting": "Enterprise Tech",
+    "entertainment": "Media & Ad",
+    "entertaining": "Media & Ad",
+    "entraitment": "Media & Ad",
+    "fashion": "eCommerce & Marketplace",
+    "femtech": "eCommerce & Marketplace",
+    "ecommerce": "eCommerce & Marketplace",
+    "e-commerce": "eCommerce & Marketplace",
+    "marketplace": "eCommerce & Marketplace",
+    "martech": "Media & Ad",
+    "mobility": "Mobility & Smart City",
+    "smart city": "Mobility & Smart City",
+    "smart-city": "Mobility & Smart City",
+    "smartcity": "Mobility & Smart City",
+    "web3": "Web3 & Crypto",
+    "web 3": "Web3 & Crypto",
+    "crypto": "Web3 & Crypto",
+    "cripto": "Web3 & Crypto",
     "life sciences": "Life Sciences",
+    "prop tech": "Proptech",
+    "sporttech": "Sport tech",
+    "sport tech": "Sport tech",
     "space tech": "Space Tech",
     "space-tech": "Space Tech",
     "spacetech": "Space Tech",
@@ -721,6 +735,7 @@ def openai_extract_rows(bullets: List[str], headers: List[str], email_date: str,
             "Keys must exactly match the headers list. Use empty string for missing data.",
             "Map company name to 'Company'.",
             "Map sector or description to 'Sector 1' using ONLY allowed_sectors. Always choose the closest fit; do not leave empty.",
+            "Never invent a new sector label outside allowed_sectors.",
             "Leave 'Tag' empty.",
             "Set 'HQ' to the city if explicitly available in the bullet; otherwise leave it empty.",
             "Map round size in € millions to 'Round size (€M)' as a number string.",
@@ -991,7 +1006,7 @@ def db_read_company_sector_map(db_path: str, database_url: str = "") -> Dict[str
             for company_key, sector in cur.fetchall():
                 c = str(company_key or "").strip()
                 s_raw = str(sector or "").strip()
-                s = normalize_sector(s_raw) or s_raw
+                s = normalize_sector(s_raw)
                 if c and s:
                     out[c] = s
         finally:
@@ -1027,7 +1042,7 @@ def db_read_company_sector_map(db_path: str, database_url: str = "") -> Dict[str
         for company_key, sector in cur.fetchall():
             c = str(company_key or "").strip()
             s_raw = str(sector or "").strip()
-            s = normalize_sector(s_raw) or s_raw
+            s = normalize_sector(s_raw)
             if c and s:
                 out[c] = s
     finally:
@@ -1344,21 +1359,30 @@ def normalize_sector(value: str) -> str:
         "climate tech": "Climate Tech",
         "biotech": "Life Sciences",
         "bio tech": "Life Sciences",
+        "deep tech": "Enterprise Tech",
         "cyber security": "Cybersecurity",
         "cybersecurity": "Cybersecurity",
-        "e-commerce": "eCommerce",
-        "ecommerce": "eCommerce",
+        "e-commerce": "eCommerce & Marketplace",
+        "ecommerce": "eCommerce & Marketplace",
         "enterprise tech": "Enterprise Tech",
         "industrial tech": "Industrial Tech",
         "life sciences": "Life Sciences",
         "fintech": "Fintech",
         "insurtech": "Insurtech",
-        "hr tech": "HR Tech",
+        "hr tech": "Enterprise Tech",
         "foodtech": "Food",
         "food tech": "Food",
         "edtech": "Edtech",
-        "web 3": "Web3",
+        "web 3": "Web3 & Crypto",
+        "web3": "Web3 & Crypto",
+        "crypto": "Web3 & Crypto",
+        "cripto": "Web3 & Crypto",
         "social network": "Social Network",
+        "smart city": "Mobility & Smart City",
+        "mobility": "Mobility & Smart City",
+        "prop tech": "Proptech",
+        "sport tech": "Sport tech",
+        "sporttech": "Sport tech",
         "space tech": "Space Tech",
         "space-tech": "Space Tech",
         "spacetech": "Space Tech",
@@ -1369,8 +1393,6 @@ def normalize_sector(value: str) -> str:
         return SECTOR_ALIAS_TO_CANONICAL[val]
     for s in ALLOWED_SECTORS:
         if s.lower() == val:
-            if s == "Biotech":
-                return "Life Sciences"
             return s
     return ""
 
@@ -1390,17 +1412,21 @@ def infer_sector_from_bullet(company: str, bullets: List[str]) -> str:
         (["nuclear", "energy", "power", "fusion", "reactor"], "Energy"),
         (["fintech", "bank", "payments", "payment", "insurance", "insurtech"], "Fintech"),
         (["caregiver", "caregivers", "health", "medical", "clinic", "hospital", "biotech", "pharma", "medtech"], "Life Sciences"),
-        (["ai", "machine learning", "ml", "deep tech", "quantum"], "Deep Tech"),
+        (["quantum"], "Quantum"),
+        (["ai", "machine learning", "ml", "deep tech"], "Enterprise Tech"),
         (["cyber", "security"], "Cybersecurity"),
-        (["ecommerce", "e-commerce", "marketplace", "retail"], "eCommerce"),
-        (["logistics", "supply chain", "delivery"], "Logistics"),
-        (["mobility", "transport", "fleet", "automotive"], "Mobility"),
+        (["ecommerce", "e-commerce", "marketplace", "retail"], "eCommerce & Marketplace"),
+        (["logistics", "supply chain", "delivery"], "Enterprise Tech"),
+        (["mobility", "transport", "fleet", "automotive", "smart city"], "Mobility & Smart City"),
+        (["real estate", "property", "proptech"], "Proptech"),
+        (["sport", "athlete", "fitness"], "Sport tech"),
         (["climate", "cleantech", "carbon"], "Climate Tech"),
         (["enterprise", "saas", "b2b", "devops"], "Enterprise Tech"),
         (["industrial", "manufacturing", "factory"], "Industrial Tech"),
-        (["food", "agri", "agritech"], "Food"),
+        (["agritech"], "Agritech"),
+        (["food"], "Food"),
         (["travel", "hospitality"], "Travel & Hospitality"),
-        (["web3", "crypto", "blockchain"], "Web3"),
+        (["web3", "crypto", "blockchain"], "Web3 & Crypto"),
     ]
     for keys, sector in keywords:
         if any(k in bullet for k in keys):
@@ -1860,6 +1886,14 @@ def main():
     if fallback_rows:
         log_info(f"Synthesized {len(fallback_rows)} fallback rows for missing companies")
         rows.extend(fallback_rows)
+
+    # Hard guard: every new row sector must belong to the allowed 24-sector whitelist.
+    for row in rows:
+        sector = normalize_sector(row.get("Sector 1", ""))
+        if not sector:
+            sector = infer_sector_from_bullet(str(row.get("Company", "")), bullets)
+            sector = normalize_sector(sector)
+        row["Sector 1"] = sector or "Enterprise Tech"
 
     # Auto-enrich HQ city for unresolved companies (run after fallback rows too)
     inferred_overrides = openai_enrich_hq_overrides(rows, bullets, args.hq_model)

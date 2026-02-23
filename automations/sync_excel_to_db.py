@@ -27,7 +27,7 @@ CANONICAL_SECTORS = [
     "Cybersecurity",
     "Deep Tech",
     "DevOps",
-    "eCommerce",
+    "eCommerce & Marketplace",
     "Edtech",
     "Energy",
     "Enterprise Tech",
@@ -126,6 +126,8 @@ def normalize_sector(value: str) -> str:
     if not raw:
         return ""
     key = raw.lower()
+    if key in {"ecommerce", "e-commerce", "marketplace", "ecommerce & marketplace", "e-commerce & marketplace"}:
+        return "eCommerce & Marketplace"
     if key in {"biotech", "bio tech", "bio-tech"}:
         return "Life Sciences"
     if key in {"space tech", "space-tech", "spacetech"}:
