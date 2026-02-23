@@ -613,6 +613,8 @@ def _run_automation(payload: dict):
 
     rows = 0
     updated_existing_rows = 0
+    normalized_amount_rows = 0
+    normalized_hq_rows = 0
     companies = []
     for line in (proc.stdout or "").splitlines():
         if line.startswith("RESULT_JSON:"):
@@ -620,6 +622,8 @@ def _run_automation(payload: dict):
                 data = json.loads(line.replace("RESULT_JSON:", "", 1))
                 rows = int(data.get("rows", 0) or 0)
                 updated_existing_rows = int(data.get("updated_existing_rows", 0) or 0)
+                normalized_amount_rows = int(data.get("normalized_amount_rows", 0) or 0)
+                normalized_hq_rows = int(data.get("normalized_hq_rows", 0) or 0)
                 companies = data.get("companies", []) or []
             except Exception:
                 pass
@@ -629,6 +633,8 @@ def _run_automation(payload: dict):
             "status": "Success",
             "rows": rows,
             "updated_existing_rows": updated_existing_rows,
+            "normalized_amount_rows": normalized_amount_rows,
+            "normalized_hq_rows": normalized_hq_rows,
             "companies": companies,
             "model": EXTRACTION_MODEL,
             "time": datetime.now().strftime("%d %b %Y · %H:%M"),

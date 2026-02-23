@@ -1226,6 +1226,81 @@ def db_insert_rows(
     return inserted, updated_existing, inserted_companies
 
 
+def db_postprocess_normalization(db_path: str, database_url: str = "") -> tuple[int, int]:
+    if database_url:
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed but --database-url was provided")
+        conn = psycopg.connect(database_url)
+        pg_mode = True
+    else:
+        conn = sqlite3.connect(db_path)
+        pg_mode = False
+    cur = conn.cursor()
+    amount_fixed = 0
+    hq_fixed = 0
+    try:
+        if pg_mode:
+            cur.execute(
+                """
+                UPDATE rounds
+                SET "Round size (€M)" = REPLACE("Round size (€M)", ',', '.')
+                WHERE COALESCE("Round size (€M)", '') LIKE '%,%'
+                """
+            )
+            amount_fixed = cur.rowcount or 0
+
+            cur.execute("SELECT to_regclass('public.hq_overrides')")
+            has_overrides = cur.fetchone()[0] is not None
+            if has_overrides:
+                cur.execute(
+                    """
+                    UPDATE rounds r
+                    SET "HQ" = o."HQ"
+                    FROM public.hq_overrides o
+                    WHERE LOWER(COALESCE(r."Company", '')) = LOWER(COALESCE(o."Company", ''))
+                      AND LOWER(COALESCE(r."HQ", '')) IN ('', 'italy', 'italia', '<city>', 'city', 'unknown', 'n/a', 'na', 'nd')
+                      AND COALESCE(o."HQ", '') <> ''
+                    """
+                )
+                hq_fixed = cur.rowcount or 0
+        else:
+            cur.execute(
+                """
+                UPDATE rounds
+                SET "Round size (€M)" = REPLACE("Round size (€M)", ',', '.')
+                WHERE COALESCE("Round size (€M)", '') LIKE '%,%'
+                """
+            )
+            amount_fixed = cur.rowcount or 0
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='hq_overrides'")
+            has_overrides = cur.fetchone() is not None
+            if has_overrides:
+                cur.execute(
+                    """
+                    UPDATE rounds
+                    SET "HQ" = (
+                      SELECT o."HQ"
+                      FROM hq_overrides o
+                      WHERE LOWER(o."Company") = LOWER(rounds."Company")
+                      LIMIT 1
+                    )
+                    WHERE LOWER(COALESCE("HQ", '')) IN ('', 'italy', 'italia', '<city>', 'city', 'unknown', 'n/a', 'na', 'nd')
+                      AND EXISTS (
+                        SELECT 1
+                        FROM hq_overrides o
+                        WHERE LOWER(o."Company") = LOWER(rounds."Company")
+                          AND COALESCE(o."HQ", '') <> ''
+                      )
+                    """
+                )
+                hq_fixed = cur.rowcount or 0
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    return amount_fixed, hq_fixed
+
+
 def load_hq_cache(path: str) -> Dict[str, str]:
     if not path or not os.path.exists(path):
         return {}
@@ -1781,6 +1856,8 @@ def main():
             if col in row:
                 row[col] = normalize_investor_name(row.get(col, ""))
 
+    amount_fixed = 0
+    hq_fixed = 0
     if db_mode:
         inserted, updated_existing, inserted_companies = db_insert_rows(
             db_path,
@@ -1790,6 +1867,8 @@ def main():
             dedup_date="Date",
             database_url=database_url,
         )
+        if not args.dry_run:
+            amount_fixed, hq_fixed = db_postprocess_normalization(db_path, database_url)
     else:
         inserted, inserted_companies = append_rows(
             ws,
@@ -1804,19 +1883,40 @@ def main():
     if args.dry_run:
         log_info(f"Dry run completed: would insert {inserted} rows")
         print(f"Dry run: would insert {inserted} rows")
-        print("RESULT_JSON:" + json.dumps({"rows": inserted, "updated_existing_rows": updated_existing, "companies": inserted_companies}))
+        print(
+            "RESULT_JSON:" + json.dumps(
+                {
+                    "rows": inserted,
+                    "updated_existing_rows": updated_existing,
+                    "normalized_amount_rows": amount_fixed,
+                    "normalized_hq_rows": hq_fixed,
+                    "companies": inserted_companies,
+                }
+            )
+        )
         return
 
     if db_mode:
         log_info(
             f"DB updated. Inserted rows: {inserted}. Updated existing rows: {updated_existing}. "
+            f"Normalized amount rows: {amount_fixed}. Normalized HQ rows: {hq_fixed}. "
             f"Companies: {', '.join(inserted_companies) if inserted_companies else '-'}"
         )
     else:
         wb.save(args.path)
         log_info(f"Workbook saved. Inserted rows: {inserted}. Companies: {', '.join(inserted_companies) if inserted_companies else '-'}")
     print(f"Inserted {inserted} rows")
-    print("RESULT_JSON:" + json.dumps({"rows": inserted, "updated_existing_rows": updated_existing, "companies": inserted_companies}))
+    print(
+        "RESULT_JSON:" + json.dumps(
+            {
+                "rows": inserted,
+                "updated_existing_rows": updated_existing,
+                "normalized_amount_rows": amount_fixed,
+                "normalized_hq_rows": hq_fixed,
+                "companies": inserted_companies,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":
