@@ -1169,7 +1169,7 @@ def db_insert_rows(
     dedup_company: str,
     dedup_date: str,
     database_url: str = "",
-) -> tuple[int, List[str]]:
+) -> tuple[int, int, List[str]]:
     if dedup_company not in headers or dedup_date not in headers:
         raise RuntimeError("Dedup headers not found in DB table")
 
@@ -1187,6 +1187,7 @@ def db_insert_rows(
         conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     inserted = 0
+    updated_existing = 0
     inserted_companies = []
     try:
         for row in rows:
@@ -1210,6 +1211,7 @@ def db_insert_rows(
                 if updates:
                     params.append(rid)
                     cur.execute(f'UPDATE rounds SET {", ".join(updates)} WHERE id = {"%s" if pg_mode else "?"}', params)
+                    updated_existing += 1
                 continue
             values = [row.get(h, "") for h in insertable_headers]
             cur.execute(insert_sql, values)
@@ -1221,7 +1223,7 @@ def db_insert_rows(
         cur.close()
         conn.close()
 
-    return inserted, inserted_companies
+    return inserted, updated_existing, inserted_companies
 
 
 def load_hq_cache(path: str) -> Dict[str, str]:
@@ -1780,7 +1782,7 @@ def main():
                 row[col] = normalize_investor_name(row.get(col, ""))
 
     if db_mode:
-        inserted, inserted_companies = db_insert_rows(
+        inserted, updated_existing, inserted_companies = db_insert_rows(
             db_path,
             headers,
             rows,
@@ -1797,20 +1799,24 @@ def main():
             dedup_company="Company",
             dedup_date="Date",
         )
+        updated_existing = 0
 
     if args.dry_run:
         log_info(f"Dry run completed: would insert {inserted} rows")
         print(f"Dry run: would insert {inserted} rows")
-        print("RESULT_JSON:" + json.dumps({"rows": inserted, "companies": inserted_companies}))
+        print("RESULT_JSON:" + json.dumps({"rows": inserted, "updated_existing_rows": updated_existing, "companies": inserted_companies}))
         return
 
     if db_mode:
-        log_info(f"DB updated. Inserted rows: {inserted}. Companies: {', '.join(inserted_companies) if inserted_companies else '-'}")
+        log_info(
+            f"DB updated. Inserted rows: {inserted}. Updated existing rows: {updated_existing}. "
+            f"Companies: {', '.join(inserted_companies) if inserted_companies else '-'}"
+        )
     else:
         wb.save(args.path)
         log_info(f"Workbook saved. Inserted rows: {inserted}. Companies: {', '.join(inserted_companies) if inserted_companies else '-'}")
     print(f"Inserted {inserted} rows")
-    print("RESULT_JSON:" + json.dumps({"rows": inserted, "companies": inserted_companies}))
+    print("RESULT_JSON:" + json.dumps({"rows": inserted, "updated_existing_rows": updated_existing, "companies": inserted_companies}))
 
 
 if __name__ == "__main__":

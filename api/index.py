@@ -612,12 +612,14 @@ def _run_automation(payload: dict):
         return jsonify({"status": "Error", "error": err or "Run failed"}), 500
 
     rows = 0
+    updated_existing_rows = 0
     companies = []
     for line in (proc.stdout or "").splitlines():
         if line.startswith("RESULT_JSON:"):
             try:
                 data = json.loads(line.replace("RESULT_JSON:", "", 1))
                 rows = int(data.get("rows", 0) or 0)
+                updated_existing_rows = int(data.get("updated_existing_rows", 0) or 0)
                 companies = data.get("companies", []) or []
             except Exception:
                 pass
@@ -626,6 +628,7 @@ def _run_automation(payload: dict):
         {
             "status": "Success",
             "rows": rows,
+            "updated_existing_rows": updated_existing_rows,
             "companies": companies,
             "model": EXTRACTION_MODEL,
             "time": datetime.now().strftime("%d %b %Y · %H:%M"),
