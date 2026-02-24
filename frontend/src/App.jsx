@@ -54,6 +54,7 @@ export default function App() {
     chartsCitySub: "€M complessivi",
     chartsCount: "Numero di round per anno",
     chartsCountSub: "conteggio",
+    privacyNote: "Privacy: No personal data is collected. The website does not require login or user registration.",
     footer: "Crafted by Matteo Moscarelli"
   } : {
     badge: "TWIS → VC Observatory",
@@ -85,6 +86,7 @@ export default function App() {
     chartsCitySub: "€M total",
     chartsCount: "Number of rounds per year",
     chartsCountSub: "count",
+    privacyNote: "Privacy: No personal data is collected. The website does not require login or user registration.",
     footer: "Crafted by Matteo Moscarelli"
   };
 
@@ -567,6 +569,8 @@ export default function App() {
           </div>
         </div>
       </section>
+
+      <p className="privacy-note">{t.privacyNote}</p>
 
       <footer className="footer">
         <a href="https://www.linkedin.com/in/matteo-moscarelli/" target="_blank" rel="noreferrer">
