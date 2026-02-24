@@ -570,9 +570,8 @@ export default function App() {
         </div>
       </section>
 
-      <p className="privacy-note">{t.privacyNote}</p>
-
       <footer className="footer">
+        <span className="privacy-note">{t.privacyNote}</span>
         <a href="https://www.linkedin.com/in/matteo-moscarelli/" target="_blank" rel="noreferrer">
           {t.footer}
         </a>

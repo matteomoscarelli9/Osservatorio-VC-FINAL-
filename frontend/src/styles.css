@@ -554,12 +554,13 @@ body {
 .footer {
   margin-top: 30px;
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
   font-size: 13px;
 }
 
 .privacy-note {
-  margin: 14px 2px 4px;
   font-size: 12px;
   line-height: 1.45;
   color: var(--muted);
@@ -608,7 +609,7 @@ body {
   .pie-wrap { grid-template-columns: 1fr; }
   .pie { margin: 0 auto; }
   .privacy-note { font-size: 11px; }
-  .footer { justify-content: flex-start; }
+  .footer { justify-content: flex-start; align-items: flex-start; flex-direction: column; gap: 8px; }
 }
 
 @media (max-width: 420px) {
