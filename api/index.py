@@ -881,6 +881,7 @@ def stats():
             "totals_by_year": totals_by_year,
             "rounds_by_year": rounds_by_year,
             "top_sectors": top_sectors,
+            "sectors_total_all": round(sum(sector_totals.values()), 6),
             "top_cities": top_cities,
             "checks": {
                 "enterprise_tech_total": round(sector_totals.get("Enterprise Tech", 0.0), 6),
