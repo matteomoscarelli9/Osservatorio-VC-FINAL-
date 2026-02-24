@@ -48,9 +48,8 @@ export default function App() {
     chatEmpty: "La risposta apparirà qui.",
     chartsYear: "Totale raccolto per anno (2022–2026)",
     chartsYearSub: "€M, aggiornato al dato disponibile",
-    chartsSector: "Top settori per raccolto",
+    chartsSector: "Top 6 settori per raccolto",
     chartsSectorSub: "€M complessivi",
-    others: "Altri",
     chartsCity: "Top città per raccolto",
     chartsCitySub: "€M complessivi",
     chartsCount: "Numero di round per anno",
@@ -80,9 +79,8 @@ export default function App() {
     chatEmpty: "The answer will appear here.",
     chartsYear: "Total raised by year (2022–2026)",
     chartsYearSub: "€M, updated to date",
-    chartsSector: "Top sectors by raised",
+    chartsSector: "Top 6 sectors by raised",
     chartsSectorSub: "€M total",
-    others: "Others",
     chartsCity: "Top cities by raised",
     chartsCitySub: "€M total",
     chartsCount: "Number of rounds per year",
@@ -241,7 +239,6 @@ export default function App() {
 
   const totalsByYear = statsData.totalsByYear || [];
   const topSectors = statsData.topSectors || [];
-  const sectorsTotalAll = Number(statsData.sectorsTotalAll || 0);
   const topCities = statsData.topCities || [];
   const roundsByYear = statsData.roundsByYear || [];
 
@@ -250,12 +247,9 @@ export default function App() {
   const maxCityTotal = Math.max(1, ...topCities.map((d) => d.total));
   const maxRoundsCount = Math.max(1, ...roundsByYear.map((d) => d.count));
 
-  const pieColors = ["#0f8a4c", "#e53935", "#1e88e5", "#f9a825", "#7e57c2", "#26a69a", "#9aa4b2"];
-  const topSectorTotal = topSectors.reduce((acc, row) => acc + row.total, 0);
-  const othersTotal = Math.max(0, sectorsTotalAll - topSectorTotal);
-  const sectorRows = othersTotal > 0.000001 ? [...topSectors, { sector: t.others, total: othersTotal }] : topSectors;
-  const totalSectorAll = sectorRows.reduce((acc, row) => acc + row.total, 0) || 1;
-  const sectorPieSegments = sectorRows.reduce((acc, row, idx) => {
+  const pieColors = ["#0f8a4c", "#e53935", "#1e88e5", "#f9a825", "#7e57c2", "#26a69a"];
+  const totalSectorAll = topSectors.reduce((acc, row) => acc + row.total, 0) || 1;
+  const sectorPieSegments = topSectors.reduce((acc, row, idx) => {
     const pct = (row.total / totalSectorAll) * 100;
     const start = acc.total;
     const end = start + pct;
