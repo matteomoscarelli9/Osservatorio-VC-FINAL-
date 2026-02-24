@@ -494,7 +494,7 @@ export default function App() {
             <span className="muted">{t.chartsSectorSub}</span>
           </div>
           <div className="pie-wrap">
-            <div className="pie" style={{ background: `conic-gradient(${sectorPieGradient})` }} />
+            <div className="pie" style={{ "--pie-grad": `conic-gradient(${sectorPieGradient})`, background: `conic-gradient(${sectorPieGradient})` }} />
             <div className="pie-legend">
               {sectorPieSegments.map((seg) => (
                 <div className="pie-item" key={seg.label}>
